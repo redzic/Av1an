@@ -1,0 +1,17 @@
+[package]
+name = "av1an"
+version = "6.1.5"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = "3.0.0-beta.2"
+av1an-core = { path = "../av1an-core" }
+anyhow = "1.0.40"
+thiserror = "1.0.24"
+dialoguer = "0.8.0"
+indicatif = { git = "https://github.com/mitsuhiko/indicatif" }
+static_init = "1.0.1"
+log = "0.4.14"
+pretty_env_logger = "0.4.0"

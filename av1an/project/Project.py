@@ -177,7 +177,7 @@ class Project(object):
 
     def load_project_from_file(self, path_string):
         """
-        Loads projedt attributes from json to this class
+        Loads project attributes from json to this class
         """
         pth = Path(path_string)
         with open(pth) as json_data:
@@ -212,7 +212,7 @@ class Project(object):
         self.workers = determine_workers_rust(self.encoder)
 
     def setup(self):
-        """Creating temporally folders when needed."""
+        """Creating temporary folders when needed."""
 
         hash = str(hash_path(str(self.input)))
 

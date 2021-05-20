@@ -1,11 +1,7 @@
 use crate::Encoder;
 use std::str::FromStr;
 
-pub fn construct_target_quality_command(
-  encoder: Encoder,
-  threads: String,
-  q: String,
-) -> Vec<String> {
+pub fn construct_target_quality_command(encoder: Encoder, threads: &str, q: &str) -> Vec<String> {
   match encoder {
     Encoder::aom => vec![
       "aomenc".into(),
@@ -51,11 +47,11 @@ pub fn construct_target_quality_command(
       "-s".into(),
       "10".into(),
       "--threads".into(),
-      format!("{}", threads),
+      threads.into(),
       "--tiles".into(),
       "16".into(),
       "--quantizer".into(),
-      format!("{}", q),
+      q.into(),
       "--low-latency".into(),
       "--rdo-lookahead-frames".into(),
       "5".into(),
@@ -80,13 +76,13 @@ pub fn construct_target_quality_command(
       "-i".into(),
       "stdin".into(),
       "--lp".into(),
-      format!("{}", threads),
+      threads.into(),
       "--preset".into(),
       "8".into(),
       "--keyint".into(),
       "240".into(),
       "--crf".into(),
-      format!("{}", q),
+      q.into(),
       "--tile-rows".into(),
       "1".into(),
       "--tile-columns".into(),
@@ -143,7 +139,7 @@ pub fn construct_target_quality_command(
       "-i".into(),
       "stdin".into(),
       "--lp".into(),
-      format!("{}", threads),
+      threads.into(),
       "-enc-mode".into(),
       "8".into(),
       "-q".into(),
@@ -158,7 +154,7 @@ pub fn construct_target_quality_command(
       "-".into(),
       "--no-progress".into(),
       "--threads".into(),
-      format!("{}", threads),
+      threads.into(),
       "--preset".into(),
       "medium".into(),
       "--crf".into(),
@@ -171,12 +167,11 @@ pub fn construct_target_quality_command(
       "--no-progress".into(),
       "--y4m".into(),
       "--frame-threads".into(),
-      format!("{}", threads),
+      threads.into(),
       "--preset".into(),
       "fast".into(),
       "--crf".into(),
       format!("{}", q),
     ],
-    _ => vec!["".into()],
   }
 }

@@ -4,6 +4,8 @@ import sys
 import time
 from pathlib import Path
 
+# from av1an_pyo3 import Logger
+
 # Todo: Add self testing on startup
 class Logger:
     def __init__(self):

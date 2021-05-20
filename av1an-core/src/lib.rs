@@ -6,20 +6,29 @@ extern crate av_format;
 extern crate av_ivf;
 extern crate failure;
 
+use clap::Clap;
 use regex::Regex;
-use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::{fs::File, io::Write};
+use std::{
+  io::Split,
+  path::{Path, PathBuf},
+};
 use sysinfo::SystemExt;
+use thiserror::Error;
 
+pub mod chunk;
 pub mod concat;
+pub mod encoder;
 pub mod ffmpeg;
+pub mod manager;
+pub mod scenedetect;
 pub mod target_quality;
 pub mod vapoursynth;
 
 #[allow(non_camel_case_types)]
-#[derive(Clone, Copy)]
+#[derive(Clap, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoder {
   aom,
   rav1e,
@@ -30,8 +39,14 @@ pub enum Encoder {
   x265,
 }
 
+#[derive(Debug, Error)]
+pub enum EncoderParseError {
+  #[error("Invalid or unknown encoder")]
+  InvalidEncoder,
+}
+
 impl FromStr for Encoder {
-  type Err = ();
+  type Err = EncoderParseError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     // set to match usage in python code
@@ -43,28 +58,67 @@ impl FromStr for Encoder {
       "svt_vp9" => Ok(Self::svt_vp9),
       "x264" => Ok(Self::x264),
       "x265" => Ok(Self::x265),
-      _ => Err(()),
+      _ => Err(EncoderParseError::InvalidEncoder),
     }
   }
 }
 
-// TODO
+#[derive(Debug, PartialEq, Eq)]
 pub enum ConcatMethod {
   /// MKVToolNix
   MKVMerge,
   /// FFmpeg
   FFmpeg,
-  /// Use native functions implemented in av1an if possible
-  Native,
+  /// Concatenate to ivf
+  Ivf,
 }
 
+#[derive(Debug, Error)]
+pub enum ConcatMethodParseError {
+  #[error("Invalid concatenation method")]
+  InvalidMethod,
+}
+
+impl FromStr for ConcatMethod {
+  type Err = ConcatMethodParseError;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "ffmpeg" => Ok(Self::FFmpeg),
+      "mkvmerge" => Ok(Self::MKVMerge),
+      "ivf" => Ok(Self::Ivf),
+      _ => Err(ConcatMethodParseError::InvalidMethod),
+    }
+  }
+}
+
+#[derive(Debug)]
 pub enum SplitMethod {
   PySceneDetect,
   AOMKeyframes,
   FFmpeg,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Error)]
+pub enum SplitMethodParseError {
+  #[error("Invalid split method")]
+  InvalidMethod,
+}
+
+impl FromStr for SplitMethod {
+  type Err = SplitMethodParseError;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "ffmpeg" => Ok(Self::FFmpeg),
+      "pyscene" => Ok(Self::PySceneDetect),
+      "aom_keyframes" => Ok(Self::AOMKeyframes),
+      _ => Err(SplitMethodParseError::InvalidMethod),
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkMethod {
   Select,
   FFMS2,
@@ -72,8 +126,14 @@ pub enum ChunkMethod {
   Hybrid,
 }
 
+#[derive(Debug, Error)]
+pub enum ChunkMethodParseError {
+  #[error("Invalid chunk method")]
+  InvalidMethod,
+}
+
 impl FromStr for ChunkMethod {
-  type Err = ();
+  type Err = ChunkMethodParseError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     // set to match usage in python code
@@ -82,7 +142,7 @@ impl FromStr for ChunkMethod {
       "vs_lsmash" => Ok(Self::LSMASH),
       "hybrid" => Ok(Self::Hybrid),
       "select" => Ok(Self::Select),
-      _ => Err(()),
+      _ => Err(ChunkMethodParseError::InvalidMethod),
     }
   }
 }
@@ -187,3 +247,5 @@ pub fn determine_workers(encoder: Encoder) -> u64 {
     1,
   )
 }
+
+pub fn encode_file() {}

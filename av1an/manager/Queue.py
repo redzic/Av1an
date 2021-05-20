@@ -112,7 +112,9 @@ class Queue:
                     f"Exception: {type(e)} {e}",
                     "Restarting chunk",
                 )
-                log(msg1, msg2, msg3)
+                log(msg1)
+                log(msg2)
+                log(msg3)
                 print(f"{msg1}\n::{msg2}\n::{msg3}")
                 restart_count += 1
 
@@ -120,7 +122,8 @@ class Queue:
             "FATAL",
             f"Chunk #{chunk.index} failed more than 3 times, shutting down thread",
         )
-        log(msg1, msg2)
+        log(msg1)
+        log(msg2)
         print(f"::{msg1}\n::{msg2}")
         self.status = "FATAL"
 

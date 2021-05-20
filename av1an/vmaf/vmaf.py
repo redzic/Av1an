@@ -67,7 +67,8 @@ class VMAF:
             msg1, msg2 = f"VMAF validation error: {pipe.returncode}", "\n".join(
                 encoder_history
             )
-            log(msg1, msg2)
+            log(msg1)
+            log(msg2)
             print(f"::{msg1}\n::{msg2}")
             sys.exit()
 

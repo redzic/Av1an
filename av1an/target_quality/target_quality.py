@@ -3,7 +3,6 @@ import os
 
 from math import isnan
 import numpy as np
-import re
 from scipy import interpolate
 
 from av1an.vmaf import VMAF

@@ -1,6 +1,8 @@
 [workspace]
+resolver = "2"
 
 members = [
     "av1an-core",
     "av1an-pyo3",
+    "av1an-cli",
 ]

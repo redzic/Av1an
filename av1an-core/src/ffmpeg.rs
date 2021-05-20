@@ -110,10 +110,8 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
 
   let mut audio_cmd = vec![];
 
-  if audio_file.exists() {
-    if audio_file.metadata().unwrap().len() > 1000 {
-      audio_cmd = vec!["-i", audio_file.to_str().unwrap(), "-c", "copy"];
-    }
+  if audio_file.exists() && audio_file.metadata().unwrap().len() > 1000 {
+    audio_cmd = vec!["-i", audio_file.to_str().unwrap(), "-c", "copy"];
   }
 
   let mut cmd = Command::new("ffmpeg");

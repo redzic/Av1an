@@ -34,11 +34,11 @@ fn hash_path(path: &str) -> PyResult<String> {
 
 #[pyfunction]
 fn construct_target_quality_command(
-  encoder: String,
-  threads: String,
-  q: String,
+  encoder: &str,
+  threads: &str,
+  q: &str,
 ) -> PyResult<Vec<String>> {
-  let encoder = Encoder::from_str(&encoder).map_err(|_| {
+  let encoder = Encoder::from_str(encoder).map_err(|_| {
     pyo3::exceptions::PyTypeError::new_err(format!("Unknown or unsupported encoder '{}'", encoder))
   })?;
 
@@ -119,11 +119,11 @@ fn determine_workers(encoder: &str) -> PyResult<u64> {
   ))
 }
 
-#[pyfunction]
-fn frame_probe_vspipe(source: &str) -> PyResult<usize> {
-  av1an_core::vapoursynth::frame_probe_vspipe(Path::new(source))
-    .map_err(|e| pyo3::exceptions::PyTypeError::new_err(format!("{}", e)))
-}
+// #[pyfunction]
+// fn frame_probe_vspipe(source: &str) -> PyResult<usize> {
+//   av1an_core::vapoursynth::frame_probe_vspipe(Path::new(source))
+//     .map_err(|e| pyo3::exceptions::PyTypeError::new_err(format!("{}", e)))
+// }
 
 #[pyfunction]
 fn ffmpeg_get_frame_count(source: &str) -> usize {
@@ -137,7 +137,7 @@ fn concatenate_ivf(input: &str, output: &str) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn concatenate_ffmpeg(temp: String, output: String, encoder: String) -> PyResult<()> {
+fn concatenate_ffmpeg(temp: &str, output: &str, encoder: &str) -> PyResult<()> {
   let encoder = Encoder::from_str(&encoder).map_err(|_| {
     pyo3::exceptions::PyTypeError::new_err(format!("Unknown or unsupported encoder '{}'", encoder))
   })?;
@@ -145,11 +145,8 @@ fn concatenate_ffmpeg(temp: String, output: String, encoder: String) -> PyResult
   let temp_path = Path::new(&temp);
   let output_path = Path::new(&output);
 
-  Ok(av1an_core::ffmpeg::concatenate_ffmpeg(
-    temp_path,
-    output_path,
-    encoder,
-  ))
+  av1an_core::ffmpeg::concatenate_ffmpeg(temp_path, output_path, encoder);
+  Ok(())
 }
 
 #[pymodule]
@@ -159,7 +156,7 @@ fn av1an_pyo3(_py: Python, m: &PyModule) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(create_vs_file, m)?)?;
   m.add_function(wrap_pyfunction!(hash_path, m)?)?;
   m.add_function(wrap_pyfunction!(adapt_probing_rate, m)?)?;
-  m.add_function(wrap_pyfunction!(frame_probe_vspipe, m)?)?;
+  // m.add_function(wrap_pyfunction!(frame_probe_vspipe, m)?)?;
   m.add_function(wrap_pyfunction!(ffmpeg_get_frame_count, m)?)?;
   m.add_function(wrap_pyfunction!(get_keyframes, m)?)?;
   m.add_function(wrap_pyfunction!(concatenate_ivf, m)?)?;

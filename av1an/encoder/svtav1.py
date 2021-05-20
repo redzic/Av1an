@@ -6,6 +6,7 @@ from av1an.chunk import Chunk
 from av1an.commandtypes import MPCommands, CommandPair, Command
 from av1an.encoder.encoder import Encoder
 from av1an.utils import list_index_of_regex
+import sys
 
 
 class SvtAv1(Encoder):
@@ -20,7 +21,7 @@ class SvtAv1(Encoder):
                 "240",
                 "--rc",
                 "0",
-                "--crf",
+                "--qp",
                 "25",
             ],
             default_passes=1,

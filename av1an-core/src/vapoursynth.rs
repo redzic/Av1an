@@ -537,12 +537,6 @@ fn output(
   let elapsed_seconds = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9;
 
   let mut state = shared_data.output_state.lock().unwrap();
-  eprintln!(
-    "Output {} frames in {:.2} seconds ({:.2} fps)",
-    state.next_output_frame,
-    elapsed_seconds,
-    state.next_output_frame as f64 / elapsed_seconds
-  );
 
   if let Some((n, ref msg)) = state.error {
     bail!("Failed to retrieve frame {} with error: {}", n, msg);
@@ -557,190 +551,23 @@ fn output(
   Ok(())
 }
 
-// TODO refactor this once it is used
-fn run(args: &[&str]) -> Result<(), Error> {
-  let matches = App::new("vspipe-rs")
-    .about("A Rust implementation of vspipe")
-    .author("Ivan M. <yalterz@gmail.com>")
-    .arg(
-      Arg::with_name("arg")
-        .short("a")
-        .long("arg")
-        .takes_value(true)
-        .multiple(true)
-        .number_of_values(1)
-        .value_name("key=value")
-        .display_order(1)
-        .help("Argument to pass to the script environment")
-        .long_help(
-          "Argument to pass to the script environment, \
-                         a key with this name and value (bytes typed) \
-                         will be set in the globals dict",
-        ),
-    )
-    .arg(
-      Arg::with_name("start")
-        .short("s")
-        .long("start")
-        .takes_value(true)
-        .value_name("N")
-        .display_order(2)
-        .help("First frame to output"),
-    )
-    .arg(
-      Arg::with_name("end")
-        .short("e")
-        .long("end")
-        .takes_value(true)
-        .value_name("N")
-        .display_order(3)
-        .help("Last frame to output"),
-    )
-    .arg(
-      Arg::with_name("outputindex")
-        .short("o")
-        .long("outputindex")
-        .takes_value(true)
-        .value_name("N")
-        .display_order(4)
-        .help("Output index"),
-    )
-    .arg(
-      Arg::with_name("requests")
-        .short("r")
-        .long("requests")
-        .takes_value(true)
-        .value_name("N")
-        .display_order(5)
-        .help("Number of concurrent frame requests"),
-    )
-    .arg(
-      Arg::with_name("y4m")
-        .short("y")
-        .long("y4m")
-        .help("Add YUV4MPEG headers to output"),
-    )
-    .arg(
-      Arg::with_name("timecodes")
-        .short("t")
-        .long("timecodes")
-        .takes_value(true)
-        .value_name("FILE")
-        .display_order(6)
-        .help("Write timecodes v2 file"),
-    )
-    .arg(
-      Arg::with_name("progress")
-        .short("p")
-        .long("progress")
-        .help("Print progress to stderr"),
-    )
-    .arg(
-      Arg::with_name("info")
-        .short("i")
-        .long("info")
-        .help("Show video info and exit"),
-    )
-    .arg(
-      Arg::with_name("preserve-cwd")
-        .short("c")
-        .long("preserve-cwd")
-        .help("Don't temporarily change the working directory the script path"),
-    )
-    .arg(
-      Arg::with_name("version")
-        .short("v")
-        .long("version")
-        .help("Show version info and exit")
-        .conflicts_with_all(&[
-          "info",
-          "progress",
-          "y4m",
-          "arg",
-          "start",
-          "end",
-          "outputindex",
-          "requests",
-          "timecodes",
-          "script",
-          "outfile",
-        ]),
-    )
-    .arg(
-      Arg::with_name("script")
-        .required_unless("version")
-        .index(1)
-        .help("Input .vpy file"),
-    )
-    .arg(
-      Arg::with_name("outfile")
-        .required_unless("version")
-        .index(2)
-        .help("Output file")
-        .long_help(
-          "Output file, use hyphen `-` for stdout \
-                         or dot `.` for suppressing any output",
-        ),
-    )
-    .get_matches_from(args);
-
-  // Check --version.
-  if matches.is_present("version") {
-    return print_version();
-  }
-
+// TODO try to eliminate code duplication
+pub fn run(input: &Path, start_frame: usize, end_frame: usize) -> Result<(), Error> {
   // Open the output files.
-  let mut output_target = match matches.value_of_os("outfile").unwrap() {
-    x if x == OsStr::new(".") => OutputTarget::Empty,
-    x if x == OsStr::new("-") => OutputTarget::Stdout(stdout()),
-    path => OutputTarget::File(File::create(path).context("Couldn't open the output file")?),
-  };
+  let mut output_target = OutputTarget::Stdout(stdout());
 
-  let timecodes_file = match matches.value_of_os("timecodes") {
-    Some(path) => Some(File::create(path).context("Couldn't open the timecodes output file")?),
-    None => None,
-  };
+  let timecodes_file = None;
 
   // Create a new VSScript environment.
   let mut environment = Environment::new().context("Couldn't create the VSScript environment")?;
 
-  // Parse and set the --arg arguments.
-  if let Some(args) = matches.values_of("arg") {
-    let mut args_map = OwnedMap::new(API::get().unwrap());
-
-    for arg in args.map(parse_arg) {
-      let (name, value) = arg.context("Couldn't parse an argument")?;
-      args_map
-        .append_data(name, value.as_bytes())
-        .context("Couldn't append an argument value")?;
-    }
-
-    environment
-      .set_variables(&args_map)
-      .context("Couldn't set arguments")?;
-  }
-
-  // Start time more similar to vspipe's.
-  let start_time = Instant::now();
-
   // Evaluate the script.
   environment
-    .eval_file(
-      matches.value_of("script").unwrap(),
-      if matches.is_present("preserve-cwd") {
-        EvalFlags::Nothing
-      } else {
-        EvalFlags::SetWorkingDir
-      },
-    )
+    .eval_file(input, EvalFlags::SetWorkingDir)
     .context("Script evaluation failed")?;
 
   // Get the output node.
-  let output_index = matches
-    .value_of("outputindex")
-    .map(str::parse)
-    .unwrap_or(Ok(0))
-    .context("Couldn't convert the output index to an integer")?;
+  let output_index = 0;
 
   #[cfg(feature = "gte-vsscript-api-31")]
   let (node, alpha_node) = environment.get_output(output_index).context(format!(
@@ -756,112 +583,71 @@ fn run(args: &[&str]) -> Result<(), Error> {
     None::<Node>,
   );
 
-  if matches.is_present("info") {
-    print_info(&mut output_target, &node, alpha_node.as_ref())
-      .context("Couldn't print info to the output file")?;
+  let num_frames = {
+    let info = node.info();
 
-    output_target
-      .flush()
-      .context("Couldn't flush the output file")?;
-  } else {
+    if let Property::Variable = info.format {
+      bail!("Cannot output clips with varying format");
+    }
+    if let Property::Variable = info.resolution {
+      bail!("Cannot output clips with varying dimensions");
+    }
+    if let Property::Variable = info.framerate {
+      bail!("Cannot output clips with varying framerate");
+    }
+
+    #[cfg(feature = "gte-vapoursynth-api-32")]
+    let num_frames = info.num_frames;
+
+    #[cfg(not(feature = "gte-vapoursynth-api-32"))]
     let num_frames = {
-      let info = node.info();
-
-      if let Property::Variable = info.format {
-        bail!("Cannot output clips with varying format");
-      }
-      if let Property::Variable = info.resolution {
-        bail!("Cannot output clips with varying dimensions");
-      }
-      if let Property::Variable = info.framerate {
-        bail!("Cannot output clips with varying framerate");
-      }
-
-      #[cfg(feature = "gte-vapoursynth-api-32")]
-      let num_frames = info.num_frames;
-
-      #[cfg(not(feature = "gte-vapoursynth-api-32"))]
-      let num_frames = {
-        match info.num_frames {
-          Property::Variable => {
-            // TODO: make it possible?
-            bail!("Cannot output clips with unknown length");
-          }
-          Property::Constant(x) => x,
+      match info.num_frames {
+        Property::Variable => {
+          // TODO: make it possible?
+          bail!("Cannot output clips with unknown length");
         }
-      };
-
-      num_frames
+        Property::Constant(x) => x,
+      }
     };
 
-    let start_frame = matches
-      .value_of("start")
-      .map(str::parse::<i32>)
-      .unwrap_or(Ok(0))
-      .context("Couldn't convert the start frame to an integer")?;
-    let end_frame = matches
-      .value_of("end")
-      .map(str::parse::<i32>)
-      .unwrap_or_else(|| Ok(num_frames as i32 - 1))
-      .context("Couldn't convert the end frame to an integer")?;
+    num_frames
+  };
 
-    // Check if the input start and end frames make sense.
-    if start_frame < 0 || end_frame < start_frame || end_frame as usize >= num_frames {
-      bail!(
-        "Invalid range of frames to output specified:\n\
+  // Check if the input start and end frames make sense.
+  if end_frame < start_frame || end_frame >= num_frames {
+    bail!(
+      "Invalid range of frames to output specified:\n\
                      first: {}\n\
                      last: {}\n\
                      clip length: {}\n\
                      frames to output: {}",
-        start_frame,
-        end_frame,
-        num_frames,
-        end_frame
-          .checked_sub(start_frame)
-          .and_then(|x| x.checked_add(1))
-          .map(|x| format!("{}", x))
-          .unwrap_or_else(|| "<overflow>".to_owned())
-      );
-    }
-
-    let requests = {
-      let requests = matches
-        .value_of("requests")
-        .map(str::parse::<usize>)
-        .unwrap_or(Ok(0))
-        .context("Couldn't convert the request count to an unsigned integer")?;
-
-      if requests == 0 {
-        environment.get_core().unwrap().info().num_threads
-      } else {
-        requests
-      }
-    };
-
-    let y4m = matches.is_present("y4m");
-    let progress = matches.is_present("progress");
-
-    output(
-      output_target,
-      timecodes_file,
-      OutputParameters {
-        node,
-        alpha_node,
-        start_frame: start_frame as usize,
-        end_frame: end_frame as usize,
-        requests,
-        y4m,
-        progress,
-      },
-    )
-    .context("Couldn't output the frames")?;
-
-    // This is still not a very valid comparison since vspipe does all argument validation
-    // before it starts the time.
-    let elapsed = start_time.elapsed();
-    let elapsed_seconds = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9;
-    eprintln!("vspipe time: {:.2} seconds", elapsed_seconds);
+      start_frame,
+      end_frame,
+      num_frames,
+      end_frame
+        .checked_sub(start_frame)
+        .and_then(|x| x.checked_add(1))
+        .map(|x| format!("{}", x))
+        .unwrap_or_else(|| "<overflow>".to_owned())
+    );
   }
+
+  let requests = environment.get_core().unwrap().info().num_threads;
+
+  output(
+    output_target,
+    timecodes_file,
+    OutputParameters {
+      node,
+      alpha_node,
+      start_frame: start_frame as usize,
+      end_frame: end_frame as usize,
+      requests,
+      y4m: true,
+      progress: false,
+    },
+  )
+  .context("Couldn't output the frames")?;
 
   Ok(())
 }
@@ -871,7 +657,7 @@ fn run(args: &[&str]) -> Result<(), Error> {
 // no matter what, which does not happen if it's being called by
 // other rust code. I do not have the time to debug this, but this
 // should probably be reported to pyo3 at some point.
-fn get_num_frames(path: &Path) -> Result<usize, Error> {
+pub fn get_num_frames(path: &Path) -> Result<usize, Error> {
   // Open the output files.
   let mut output_target = OutputTarget::Stdout(stdout());
 
@@ -931,28 +717,4 @@ fn get_num_frames(path: &Path) -> Result<usize, Error> {
   };
 
   Ok(num_frames)
-}
-
-// TODO delete this implementation eventually, link to C api
-pub fn frame_probe_vspipe(source: &Path) -> anyhow::Result<usize> {
-  use regex::Regex;
-
-  let output = String::from_utf8(
-    Command::new("vspipe")
-      .arg("-i")
-      .arg(source)
-      .arg("-")
-      .output()?
-      .stdout,
-  )?;
-
-  let re = Regex::new(r#"Frames:\s*([0-9]+)\s"#)?;
-  Ok(
-    re.captures(&output)
-      .unwrap()
-      .get(1)
-      .unwrap()
-      .as_str()
-      .parse::<usize>()?,
-  )
 }
