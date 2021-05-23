@@ -6,6 +6,7 @@ extern crate av_format;
 extern crate av_ivf;
 extern crate failure;
 
+use chunk::create_video_queue_vs;
 use clap::Clap;
 use regex::Regex;
 use std::process::{Command, Stdio};
@@ -248,4 +249,8 @@ pub fn determine_workers(encoder: Encoder) -> u64 {
   )
 }
 
-pub fn encode_file() {}
+pub fn segment_first_pass() {}
+
+pub fn encode_file(input: &Path, split_locations: &[usize]) {
+  create_video_queue_vs(input, split_locations);
+}

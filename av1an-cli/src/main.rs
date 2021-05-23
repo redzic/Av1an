@@ -1,15 +1,13 @@
-// (Full example with detailed comments in examples/01d_quick_example.rs)
-//
-// This example demonstrates clap's full 'custom derive' style of creating arguments which is the
-// simplest method of use, but sacrifices some flexibility.
 use av1an_core::{
-  chunk::create_video_queue_vs, scenedetect, vapoursynth, ChunkMethod, ConcatMethod, Encoder,
-  SplitMethod,
+  chunk::create_video_queue_vs, scenedetect, ChunkMethod, ConcatMethod, Encoder, SplitMethod,
 };
 use clap::AppSettings::ColoredHelp;
 use clap::Clap;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::ffi::OsStr;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::Receiver;
+use std::thread;
 use thiserror::Error;
 
 use dialoguer::Confirm;
@@ -21,38 +19,32 @@ use std::path::{Path, PathBuf};
 
 // TODO refactor to having InputType
 #[derive(Debug)]
-pub enum Input {
+pub enum InputType {
   /// Vapoursynth (.vpy, .py) input source
-  Vapoursynth(PathBuf),
+  Vapoursynth,
   /// Normal video input in a container
-  Video(PathBuf),
+  Video,
 }
 
-impl Input {
-  pub fn is_vapoursynth(&self) -> bool {
-    matches!(&self, Input::Vapoursynth(_))
-  }
-
-  pub fn as_path(&self) -> &Path {
-    match &self {
-      Self::Video(p) => p.as_path(),
-      Self::Vapoursynth(p) => p.as_path(),
-    }
-  }
+#[derive(Debug)]
+pub struct Input {
+  path: PathBuf,
+  r#type: InputType,
 }
 
 impl From<&OsStr> for Input {
   fn from(s: &OsStr) -> Self {
-    let path = PathBuf::from(s);
-
-    if let Some(ext) = path.extension() {
-      if ext == "py" || ext == "vpy" {
-        Self::Vapoursynth(path)
+    Input {
+      path: PathBuf::from(s),
+      r#type: if let Some(ext) = Path::new(s).extension() {
+        if ext == "vpy" || ext == "py" {
+          InputType::Vapoursynth
+        } else {
+          InputType::Video
+        }
       } else {
-        Self::Video(path)
-      }
-    } else {
-      Self::Video(path)
+        InputType::Video
+      },
     }
   }
 }
@@ -235,6 +227,70 @@ pub fn validate_args(args: &Args) -> Result<(), CliError> {
 #[dynamic]
 static BAR: ProgressBar = ProgressBar::hidden();
 
+use std::io;
+use std::string::FromUtf8Error;
+use std::sync::mpsc::channel;
+use std::thread::spawn;
+
+#[derive(Debug)]
+enum PipeError {
+  IO(io::Error),
+  NotUtf8(FromUtf8Error),
+}
+
+#[derive(Debug)]
+enum PipedLine {
+  Line(String),
+  EOF,
+}
+
+// Reads data from the pipe byte-by-byte and returns the lines.
+// Useful for processing the pipe's output as soon as it becomes available.
+struct PipeStreamReader {
+  lines: Receiver<Result<PipedLine, PipeError>>,
+}
+
+impl PipeStreamReader {
+  // Starts a background task reading bytes from the pipe.
+  fn new(mut stream: Box<dyn io::Read + Send>) -> PipeStreamReader {
+    PipeStreamReader {
+      lines: {
+        let (tx, rx) = channel();
+
+        spawn(move || {
+          let mut buf = Vec::new();
+          let mut byte = [0u8];
+          loop {
+            match stream.read(&mut byte) {
+              Ok(0) => {
+                let _ = tx.send(Ok(PipedLine::EOF));
+                break;
+              }
+              Ok(_) => {
+                if byte[0] == b'\r' {
+                  tx.send(match String::from_utf8(buf.clone()) {
+                    Ok(line) => Ok(PipedLine::Line(line)),
+                    Err(err) => Err(PipeError::NotUtf8(err)),
+                  })
+                  .unwrap();
+                  buf.clear()
+                } else {
+                  buf.push(byte[0])
+                }
+              }
+              Err(error) => {
+                tx.send(Err(PipeError::IO(error))).unwrap();
+              }
+            }
+          }
+        });
+
+        rx
+      },
+    }
+  }
+}
+
 pub fn main() -> anyhow::Result<()> {
   let args: Args = Args::parse();
 
@@ -258,16 +314,16 @@ pub fn main() -> anyhow::Result<()> {
     warn!("probing rate < 4 is currently experimental");
   }
 
-  let total_frames = av1an_core::vapoursynth::get_num_frames(args.input.as_path()).unwrap() as u64;
+  let total_frames = av1an_core::vapoursynth::get_num_frames(&args.input.path).unwrap() as u64;
   BAR.set_length(total_frames);
   BAR.set_draw_target(ProgressDrawTarget::stderr());
   BAR.set_style(
     ProgressStyle::default_bar()
-      .template("[{eta_precise}] {prefix:.bold}▕{bar:60.green}▏{msg} ({pos}/{len}) {per_sec}")
+      .template("[{eta_precise}] {prefix:.bold}▕{bar:60.blue}▏{msg} ({pos}/{len}) {per_sec}")
       .progress_chars("█▉▊▋▌▍▎▏  "),
   );
   let scene_changes = scenedetect::get_scene_changes(
-    &args.input.as_path(),
+    &args.input.path,
     Some(Box::new(|frames, _| {
       BAR.set_position(frames as u64);
       BAR.set_message(format!("{:3}%", 100 * frames as u64 / BAR.length()));
@@ -276,7 +332,106 @@ pub fn main() -> anyhow::Result<()> {
 
   BAR.finish();
 
-  dbg!(create_video_queue_vs(&args.input.as_path(), &scene_changes));
+  dbg!(create_video_queue_vs(&args.input.path, &scene_changes));
+
+  let mut first_pass = Command::new("aomenc")
+    .args(&[
+      "-",
+      "--threads=8",
+      "-b",
+      "10",
+      "--cpu-used=6",
+      "--end-usage=q",
+      "--tile-columns=2",
+      "--tile-rows=1",
+      "--passes=2",
+      "--pass=1",
+      "--fpf=out.log",
+      "-o",
+      "-",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .stdin(Stdio::piped())
+    .spawn()
+    .unwrap();
+
+  let mut stdin = first_pass.stdin.take().unwrap();
+  let input_path_clone = args.input.path.clone();
+  thread::spawn(move || {
+    av1an_core::vapoursynth::run(
+      input_path_clone.as_path(),
+      0,
+      total_frames as usize - 1,
+      &mut stdin,
+    )
+    .unwrap();
+  });
+
+  first_pass.wait().unwrap();
+
+  let mut second_pass = Command::new("aomenc")
+    .args(&[
+      "-",
+      "--threads=8",
+      "-b",
+      "10",
+      "--cpu-used=6",
+      "--end-usage=q",
+      "--tile-columns=2",
+      "--tile-rows=1",
+      "--passes=2",
+      "--pass=2",
+      "--fpf=out.log",
+      "-o",
+      "out.ivf",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .stdin(Stdio::piped())
+    .spawn()
+    .unwrap();
+
+  let mut stdin = second_pass.stdin.take().unwrap();
+
+  thread::spawn(move || {
+    av1an_core::vapoursynth::run(&args.input.path, 0, total_frames as usize - 1, &mut stdin)
+      .unwrap();
+  });
+
+  let stderr = second_pass.stderr.take().unwrap();
+  let out = PipeStreamReader::new(Box::new(stderr));
+
+  let bar = ProgressBar::hidden();
+
+  bar.set_length(total_frames);
+  bar.set_draw_target(ProgressDrawTarget::stderr());
+  bar.set_style(
+    ProgressStyle::default_bar()
+      .template("[{eta_precise}] {prefix:.bold}▕{bar:60.green}▏{msg} ({pos}/{len}) {per_sec}")
+      .progress_chars("█▉▊▋▌▍▎▏  "),
+  );
+
+  for line in out.lines {
+    match line {
+      Ok(PipedLine::Line(ref s)) => {
+        if let Some(p) = s
+          .split_terminator('/')
+          .nth(1)
+          .and_then(|s| s.get(s.find("frame").unwrap() + "frame".len()..))
+          .and_then(|x| x.split_ascii_whitespace().next())
+          .and_then(|x| x.parse::<usize>().ok())
+        {
+          bar.set_position(p as u64);
+        }
+      }
+      _ => (),
+    }
+  }
+
+  bar.finish();
+
+  second_pass.wait().unwrap();
 
   Ok(())
 }

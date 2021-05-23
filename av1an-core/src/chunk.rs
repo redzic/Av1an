@@ -1,8 +1,8 @@
-use std::cmp::Reverse;
 use std::iter;
 use std::path::Path;
+use std::{cmp::Reverse, ops::Deref};
 
-use crate::vapoursynth;
+use crate::{chunk, vapoursynth};
 
 pub fn create_vs_chunk(
   temp: &Path,
@@ -17,23 +17,31 @@ pub fn create_vs_chunk(
   frame_end -= 1;
 }
 
-pub fn create_video_queue_vs(input: &Path, split_locations: &[usize]) -> Vec<(usize, usize)> {
+#[must_use]
+pub fn create_video_queue_vs(
+  input: &Path,
+  split_locations: &[usize],
+) -> Vec<(usize, (usize, usize))> {
   let last_frame = vapoursynth::get_num_frames(input).unwrap();
 
-  let mut chunk_boundaries: Vec<(usize, usize)> = split_locations
+  // (index, (start, end))
+  let mut chunk_boundaries: Vec<(usize, (usize, usize))> = split_locations
     .iter()
-    .chain(iter::once(&last_frame))
+    .copied()
+    .chain(iter::once(last_frame))
     .zip(
       split_locations
         .iter()
-        .chain(iter::once(&last_frame))
+        .copied()
+        .chain(iter::once(last_frame))
+        // it's zero-indexed so the second frame needs to be offset to not get a frame that doesn't exist
+        .map(|x| x - 1)
         .skip(1),
     )
-    // TODO move this so that each element is already not a reference?
-    .map(|(x, y)| (*x, *y))
+    .enumerate()
     .collect();
 
-  chunk_boundaries.sort_unstable_by_key(|(start, end)| Reverse(end - start));
+  chunk_boundaries.sort_unstable_by_key(|(_, (start, end))| Reverse(end - start));
 
   chunk_boundaries
 }

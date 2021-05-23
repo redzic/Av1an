@@ -10,8 +10,6 @@ extern crate num_rational;
 extern crate vapoursynth;
 
 use clap::{App, Arg};
-use std::cmp;
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::fs::File;
@@ -20,16 +18,18 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
+use std::{cell::RefCell, collections::HashMap};
+use std::{cmp, rc::Rc};
 
 use self::num_rational::Ratio;
 use self::vapoursynth::prelude::*;
 use super::*;
 
-enum OutputTarget {
-  File(File),
-  Stdout(Stdout),
-  Empty,
-}
+// enum OutputTarget {
+//   File(File),
+//   Stdout(Stdout),
+//   Empty,
+// }
 
 struct OutputParameters<'core> {
   node: Node<'core>,
@@ -41,8 +41,9 @@ struct OutputParameters<'core> {
   progress: bool,
 }
 
-struct OutputState<'core> {
-  output_target: OutputTarget,
+struct OutputState<'core, W: Write + Send> {
+  // output_target: Box<dyn Write + Send>,
+  output_target: W,
   timecodes_file: Option<File>,
   error: Option<(usize, Error)>,
   reorder_map: HashMap<usize, (Option<FrameRef<'core>>, Option<FrameRef<'core>>)>,
@@ -56,29 +57,29 @@ struct OutputState<'core> {
   fps: Option<f64>,
 }
 
-struct SharedData<'core> {
+struct SharedData<'core, W: Write + Send> {
   output_done_pair: (Mutex<bool>, Condvar),
   output_parameters: OutputParameters<'core>,
-  output_state: Mutex<OutputState<'core>>,
+  output_state: Mutex<OutputState<'core, W>>,
 }
 
-impl Write for OutputTarget {
-  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-    match *self {
-      OutputTarget::File(ref mut file) => file.write(buf),
-      OutputTarget::Stdout(ref mut out) => out.write(buf),
-      OutputTarget::Empty => Ok(buf.len()),
-    }
-  }
+// impl Write for OutputTarget {
+//   fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+//     match *self {
+//       OutputTarget::File(ref mut file) => file.write(buf),
+//       OutputTarget::Stdout(ref mut out) => out.write(buf),
+//       OutputTarget::Empty => Ok(buf.len()),
+//     }
+//   }
 
-  fn flush(&mut self) -> io::Result<()> {
-    match *self {
-      OutputTarget::File(ref mut file) => file.flush(),
-      OutputTarget::Stdout(ref mut out) => out.flush(),
-      OutputTarget::Empty => Ok(()),
-    }
-  }
-}
+//   fn flush(&mut self) -> io::Result<()> {
+//     match *self {
+//       OutputTarget::File(ref mut file) => file.flush(),
+//       OutputTarget::Stdout(ref mut out) => out.flush(),
+//       OutputTarget::Empty => Ok(()),
+//     }
+//   }
+// }
 
 fn print_version() -> Result<(), Error> {
   let environment = Environment::new().context("Couldn't create the VSScript environment")?;
@@ -298,7 +299,10 @@ fn print_frames<W: Write>(
   Ok(())
 }
 
-fn update_timecodes(frame: &Frame, state: &mut OutputState) -> Result<(), Error> {
+fn update_timecodes<W: Write + Send>(
+  frame: &Frame,
+  state: &mut OutputState<W>,
+) -> Result<(), Error> {
   let props = frame.props();
   let duration_num = props
     .get_int("_DurationNum")
@@ -316,11 +320,11 @@ fn update_timecodes(frame: &Frame, state: &mut OutputState) -> Result<(), Error>
   Ok(())
 }
 
-fn frame_done_callback<'core>(
+fn frame_done_callback<'core, W: Write + Send + 'core>(
   frame: Result<FrameRef<'core>, GetFrameError>,
   n: usize,
   _node: &Node<'core>,
-  shared_data: &Arc<SharedData<'core>>,
+  shared_data: &Arc<SharedData<'core, W>>,
   alpha: bool,
 ) {
   let parameters = &shared_data.output_parameters;
@@ -460,8 +464,8 @@ fn frame_done_callback<'core>(
   }
 }
 
-fn output(
-  mut output_target: OutputTarget,
+fn output<W: Write + Send + Sync>(
+  mut out: &mut W,
   mut timecodes_file: Option<File>,
   parameters: OutputParameters,
 ) -> Result<(), Error> {
@@ -471,8 +475,7 @@ fn output(
       bail!("Can't apply y4m headers to a clip with alpha");
     }
 
-    print_y4m_header(&mut output_target, &parameters.node)
-      .context("Couldn't write the y4m header")?;
+    print_y4m_header(&mut out, &parameters.node).context("Couldn't write the y4m header")?;
   }
 
   // Print the timecodes header.
@@ -487,7 +490,7 @@ fn output(
 
   let output_done_pair = (Mutex::new(false), Condvar::new());
   let output_state = Mutex::new(OutputState {
-    output_target,
+    output_target: out,
     timecodes_file,
     error: None,
     reorder_map: HashMap::new(),
@@ -533,9 +536,6 @@ fn output(
     done = cvar.wait(done).unwrap();
   }
 
-  let elapsed = start_time.elapsed();
-  let elapsed_seconds = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9;
-
   let mut state = shared_data.output_state.lock().unwrap();
 
   if let Some((n, ref msg)) = state.error {
@@ -552,10 +552,12 @@ fn output(
 }
 
 // TODO try to eliminate code duplication
-pub fn run(input: &Path, start_frame: usize, end_frame: usize) -> Result<(), Error> {
-  // Open the output files.
-  let mut output_target = OutputTarget::Stdout(stdout());
-
+pub fn run<W: Write + Send + Sync>(
+  input: &Path,
+  start_frame: usize,
+  end_frame: usize,
+  out: &mut W,
+) -> Result<(), Error> {
   let timecodes_file = None;
 
   // Create a new VSScript environment.
@@ -635,7 +637,7 @@ pub fn run(input: &Path, start_frame: usize, end_frame: usize) -> Result<(), Err
   let requests = environment.get_core().unwrap().info().num_threads;
 
   output(
-    output_target,
+    out,
     timecodes_file,
     OutputParameters {
       node,
@@ -652,15 +654,7 @@ pub fn run(input: &Path, start_frame: usize, end_frame: usize) -> Result<(), Err
   Ok(())
 }
 
-// TODO Use this implementation when there is no python code left,
-// unfortunately, if you call it through pyo3, it seems to segfault
-// no matter what, which does not happen if it's being called by
-// other rust code. I do not have the time to debug this, but this
-// should probably be reported to pyo3 at some point.
 pub fn get_num_frames(path: &Path) -> Result<usize, Error> {
-  // Open the output files.
-  let mut output_target = OutputTarget::Stdout(stdout());
-
   // Create a new VSScript environment.
   let mut environment = Environment::new().context("Couldn't create the VSScript environment")?;
 

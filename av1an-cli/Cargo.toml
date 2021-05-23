@@ -15,3 +15,4 @@ indicatif = { git = "https://github.com/mitsuhiko/indicatif" }
 static_init = "1.0.1"
 log = "0.4.14"
 pretty_env_logger = "0.4.0"
+regex = "1.5.4"
