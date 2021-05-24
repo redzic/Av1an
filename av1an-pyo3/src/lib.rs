@@ -35,7 +35,7 @@ fn hash_path(path: &str) -> PyResult<String> {
 #[pyfunction]
 fn construct_target_quality_command(
   encoder: &str,
-  threads: &str,
+  threads: usize,
   q: &str,
 ) -> PyResult<Vec<String>> {
   let encoder = Encoder::from_str(encoder).map_err(|_| {
@@ -108,6 +108,13 @@ fn get_ffmpeg_info() -> String {
 }
 
 #[pyfunction]
+fn get_frame_types(file: String) -> Vec<String> {
+  let input_file = Path::new(&file);
+
+  av1an_core::ffmpeg::get_frame_types(input_file)
+}
+
+#[pyfunction]
 fn determine_workers(encoder: &str) -> PyResult<u64> {
   Ok(av1an_core::determine_workers(
     Encoder::from_str(encoder).map_err(|_| {
@@ -124,6 +131,13 @@ fn determine_workers(encoder: &str) -> PyResult<u64> {
 //   av1an_core::vapoursynth::frame_probe_vspipe(Path::new(source))
 //     .map_err(|e| pyo3::exceptions::PyTypeError::new_err(format!("{}", e)))
 // }
+
+#[pyfunction]
+fn extract_audio(input: String, temp: String, audio_params: Vec<String>) {
+  let input_path = Path::new(&input);
+  let temp_path = Path::new(&temp);
+  av1an_core::ffmpeg::extract_audio(input_path, temp_path, audio_params);
+}
 
 #[pyfunction]
 fn ffmpeg_get_frame_count(source: &str) -> usize {
@@ -149,6 +163,18 @@ fn concatenate_ffmpeg(temp: &str, output: &str, encoder: &str) -> PyResult<()> {
   Ok(())
 }
 
+#[pyfunction]
+fn extra_splits(split_locations: Vec<usize>, total_frames: usize, split_size: usize) -> Vec<usize> {
+  av1an_core::split::extra_splits(split_locations, total_frames, split_size)
+}
+
+#[pyfunction]
+fn segment(input: String, temp: String, segments: Vec<usize>) -> PyResult<()> {
+  let input = Path::new(&input);
+  let temp = Path::new(&temp);
+  Ok(av1an_core::split::segment(input, temp, segments))
+}
+
 #[pymodule]
 fn av1an_pyo3(_py: Python, m: &PyModule) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(get_ffmpeg_info, m)?)?;
@@ -162,6 +188,9 @@ fn av1an_pyo3(_py: Python, m: &PyModule) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(concatenate_ivf, m)?)?;
   m.add_function(wrap_pyfunction!(construct_target_quality_command, m)?)?;
   m.add_function(wrap_pyfunction!(concatenate_ffmpeg, m)?)?;
-
+  m.add_function(wrap_pyfunction!(extract_audio, m)?)?;
+  m.add_function(wrap_pyfunction!(get_frame_types, m)?)?;
+  m.add_function(wrap_pyfunction!(extra_splits, m)?)?;
+  m.add_function(wrap_pyfunction!(segment, m)?)?;
   Ok(())
 }

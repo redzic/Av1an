@@ -22,7 +22,7 @@ RUN cmake .. -DCMAKE_BUILD_TYPE=Release && \
 # Create user
 RUN useradd -ms /bin/bash app_user
 
-# Install av1an
+# Copy av1an
 COPY . /Av1an
 WORKDIR /Av1an
 
@@ -33,7 +33,7 @@ RUN chmod 777 -R /Av1an
 USER app_user
 
 # Install rust
-RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
+RUN curl https://sh.rustup.rs -sSf | bash -s -- -y --default-toolchain nightly
 
 # Create virtualenv required for maturin develop
 ENV VIRTUAL_ENV=/Av1an/venv
@@ -41,8 +41,8 @@ RUN python3 -m venv "${VIRTUAL_ENV}"
 ENV PATH="$VIRTUAL_ENV/bin:/home/app_user/.cargo/bin:$PATH"
 
 # Install av1an requirements and build rust requirements
-RUN pip3 install -r requirements.txt vapoursynth && \
-    maturin develop --release -m av1an-pyo3/Cargo.toml
+RUN pip3 install wheel && pip3 install -r requirements.txt vapoursynth
+RUN maturin develop --release -m av1an-pyo3/Cargo.toml
 
 VOLUME ["/videos"]
 WORKDIR /videos

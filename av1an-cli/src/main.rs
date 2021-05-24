@@ -4,10 +4,10 @@ use av1an_core::{
 use clap::AppSettings::ColoredHelp;
 use clap::Clap;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::ffi::OsStr;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Receiver;
 use std::thread;
-use std::{ffi::OsStr, thread::Thread};
 use thiserror::Error;
 
 use dialoguer::Confirm;

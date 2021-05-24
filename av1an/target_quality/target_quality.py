@@ -347,27 +347,27 @@ class TargetQuality:
         probe_name = self.gen_probes_names(chunk, q).with_suffix(".ivf").as_posix()
 
         if encoder == "aom":
-            params = construct_target_quality_command("aom", str(n_threads), str(q))
+            params = construct_target_quality_command("aom", n_threads, str(q))
             cmd = CommandPair(pipe, [*params, "-o", probe_name, "-"])
 
         elif encoder == "x265":
-            params = construct_target_quality_command("x265", str(n_threads), str(q))
+            params = construct_target_quality_command("x265", n_threads, str(q))
             cmd = CommandPair(pipe, [*params, "-o", probe_name, "-"])
 
         elif encoder == "rav1e":
-            params = construct_target_quality_command("rav1e", str(n_threads), str(q))
+            params = construct_target_quality_command("rav1e", n_threads, str(q))
             cmd = CommandPair(pipe, [*params, "-o", probe_name, "-"])
 
         elif encoder == "vpx":
-            params = construct_target_quality_command("vpx", str(n_threads), str(q))
+            params = construct_target_quality_command("vpx", n_threads, str(q))
             cmd = CommandPair(pipe, [*params, "-o", probe_name, "-"])
 
         elif encoder == "svt_av1":
-            params = construct_target_quality_command("svt_av1", str(n_threads), str(q))
+            params = construct_target_quality_command("svt_av1", n_threads, str(q))
             cmd = CommandPair(pipe, [*params, "-b", probe_name])
 
         elif encoder == "svt_vp9":
-            params = construct_target_quality_command("svt_vp9", str(n_threads), str(q))
+            params = construct_target_quality_command("svt_vp9", n_threads, str(q))
             # TODO: pipe needs to output rawvideo
             cmd = CommandPair(pipe, [*params, "-b", probe_name, "-"])
 
@@ -625,20 +625,3 @@ class TargetQuality:
                 q_list.append(int(round(q[0])))
 
             return q_list
-
-
-"""
-def frame_types_probe(chunk: Chunk, q, ffmpeg_pipe, encoder, probing_rate, qp_file) -> CommandPair:
-
-    probe_name = gen_probes_names(chunk, q).with_suffix('.ivf').as_posix()
-
-    pipe = ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-i', '-', '-vf', f'select=not(mod(n\\,{probing_rate}))',
-            *ffmpeg_pipe]
-
-    params = ['x265', '--log-level', '0', '--no-progress',
-              '--y4m', '--preset', 'fast', '--crf', f'{q}']
-
-    cmd = CommandPair(pipe, [*params, '-o', probe_name, '-'])
-
-    return cmd
-"""

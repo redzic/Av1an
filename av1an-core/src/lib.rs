@@ -23,6 +23,7 @@ pub mod encoder;
 pub mod ffmpeg;
 pub mod manager;
 pub mod scenedetect;
+pub mod split;
 pub mod target_quality;
 pub mod vapoursynth;
 

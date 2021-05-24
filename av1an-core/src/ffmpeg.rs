@@ -94,7 +94,57 @@ pub fn write_concat_file(temp_folder: &Path) {
   }
 
   let mut file = File::create(concat_file).unwrap();
-  file.write_all(contents.as_bytes());
+  file.write_all(contents.as_bytes()).unwrap();
+}
+
+pub fn have_audio(file: &Path) -> bool {
+  let mut cmd = Command::new("ffmpeg");
+
+  cmd.stdout(Stdio::piped());
+  cmd.stderr(Stdio::piped());
+
+  let re = Regex::new(r".*Stream.+(Audio)").unwrap();
+
+  cmd.args(&["-hide_banner", "-i", file.to_str().unwrap()]);
+
+  let out = cmd.output().unwrap();
+
+  let output = String::from_utf8(out.stderr).unwrap();
+
+  re.is_match(&output)
+}
+
+/// Extracting audio
+pub fn extract_audio(input: &Path, temp: &Path, audio_params: Vec<String>) {
+  let have_audio = have_audio(input);
+
+  if have_audio {
+    let audio_file = Path::new(temp).join("audio.mkv");
+    let mut process_audio = Command::new("ffmpeg");
+
+    process_audio.stdout(Stdio::piped());
+    process_audio.stderr(Stdio::piped());
+
+    process_audio.args(&[
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-i",
+      input.to_str().unwrap(),
+      "-map_metadata",
+      "-1",
+      "-dn",
+      "-vn",
+    ]);
+
+    let audio_args: Vec<&str> = audio_params.iter().map(|x| &**x).collect();
+    process_audio.args(audio_args);
+    process_audio.arg(audio_file.to_str().unwrap());
+
+    let out = process_audio.output().unwrap();
+    assert!(out.status.success());
+  }
 }
 
 /// Concatenates using ffmpeg
@@ -166,4 +216,37 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
   let out = cmd.output().unwrap();
 
   assert!(out.status.success());
+}
+
+pub fn get_frame_types(file: &Path) -> Vec<String> {
+  let mut cmd = Command::new("ffmpeg");
+
+  cmd.stdout(Stdio::piped());
+  cmd.stderr(Stdio::piped());
+
+  cmd.args(&[
+    "ffmpeg",
+    "-hide_banner",
+    "-i",
+    file.to_str().unwrap(),
+    "-vf",
+    "showinfo",
+    "-f",
+    "null",
+    "-loglevel",
+    "debug",
+    "-",
+  ]);
+
+  let out = cmd.output().unwrap();
+
+  assert!(out.status.success());
+
+  let output = String::from_utf8(out.stderr).unwrap();
+
+  let str_vec = output.split("\n").collect::<Vec<_>>();
+
+  let string_vec: Vec<String> = str_vec.iter().map(|x| x.to_string()).collect();
+
+  string_vec
 }
