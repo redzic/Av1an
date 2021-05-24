@@ -4,10 +4,10 @@ use av1an_core::{
 use clap::AppSettings::ColoredHelp;
 use clap::Clap;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use std::ffi::OsStr;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Receiver;
 use std::thread;
+use std::{ffi::OsStr, thread::Thread};
 use thiserror::Error;
 
 use dialoguer::Confirm;
@@ -57,9 +57,9 @@ pub struct Args {
   #[clap(short, long, parse(from_os_str))]
   input: Input,
 
-  /// Temporary folder to use
+  /// Temporary directory to use
   #[clap(long, parse(from_os_str))]
-  temp: Option<PathBuf>,
+  temp_dir: Option<PathBuf>,
 
   /// Specify output file
   #[clap(short, long, parse(from_os_str))]
@@ -82,7 +82,7 @@ pub struct Args {
   resume: bool,
 
   /// Keep temporary folder after encode
-  #[clap(short, long)]
+  #[clap(long)]
   keep: bool,
 
   /// Path to config file (creates if it does not exist)
@@ -127,8 +127,7 @@ pub struct Args {
 
   /// Parameters passed to the encoder
   #[clap(short, long)]
-  // video_params: Option<String>,
-  video_params: Option<Vec<String>>,
+  video_params: Option<String>,
 
   #[clap(short, long, arg_enum, default_value = "aom")]
   encoder: Encoder,
@@ -169,9 +168,9 @@ pub struct Args {
   #[clap(long, default_value = "1920x1080")]
   vmaf_res: String,
 
-  /// Threads for VMAF calculation
+  /// Number of threads to use for VMAF calculation
   #[clap(long)]
-  n_threads: Option<usize>,
+  vmaf_threads: Option<usize>,
 
   /// Value to target
   #[clap(short, long)]
@@ -296,6 +295,10 @@ pub fn main() -> anyhow::Result<()> {
 
   validate_args(&args)?;
 
+  // This is safe because the spawned threads cannot actually surpass the lifetime of the main function,
+  // so this reference is aways valid
+  let input = unsafe { std::mem::transmute::<_, &'static Path>(args.input.path.as_path()) };
+
   pretty_env_logger::init_custom_env("AV1AN_LOG");
 
   if args.output.exists() {
@@ -314,7 +317,10 @@ pub fn main() -> anyhow::Result<()> {
     warn!("probing rate < 4 is currently experimental");
   }
 
-  let total_frames = av1an_core::vapoursynth::get_num_frames(&args.input.path).unwrap() as u64;
+  let total_frames = av1an_core::vapoursynth::get_num_frames(input).unwrap() as u64;
+
+  println!("Scene detection");
+
   BAR.set_length(total_frames);
   BAR.set_draw_target(ProgressDrawTarget::stderr());
   BAR.set_style(
@@ -332,106 +338,137 @@ pub fn main() -> anyhow::Result<()> {
 
   BAR.finish();
 
-  dbg!(create_video_queue_vs(&args.input.path, &scene_changes));
+  let splits = create_video_queue_vs(&args.input.path, &scene_changes);
+  println!("Spits: {:?}", &splits);
 
-  let mut first_pass = Command::new("aomenc")
-    .args(&[
-      "-",
-      "--threads=8",
-      "-b",
-      "10",
-      "--cpu-used=6",
-      "--end-usage=q",
-      "--tile-columns=2",
-      "--tile-rows=1",
-      "--passes=2",
-      "--pass=1",
-      "--fpf=out.log",
-      "-o",
-      "-",
-    ])
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .stdin(Stdio::piped())
-    .spawn()
-    .unwrap();
+  for (chunk_num, (start, end)) in splits {
+    println!("First pass");
 
-  let mut stdin = first_pass.stdin.take().unwrap();
-  let input_path_clone = args.input.path.clone();
-  thread::spawn(move || {
-    av1an_core::vapoursynth::run(
-      input_path_clone.as_path(),
-      0,
-      total_frames as usize - 1,
-      &mut stdin,
-    )
-    .unwrap();
-  });
-
-  first_pass.wait().unwrap();
-
-  let mut second_pass = Command::new("aomenc")
-    .args(&[
-      "-",
-      "--threads=8",
-      "-b",
-      "10",
-      "--cpu-used=6",
-      "--end-usage=q",
-      "--tile-columns=2",
-      "--tile-rows=1",
-      "--passes=2",
-      "--pass=2",
-      "--fpf=out.log",
-      "-o",
-      "out.ivf",
-    ])
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .stdin(Stdio::piped())
-    .spawn()
-    .unwrap();
-
-  let mut stdin = second_pass.stdin.take().unwrap();
-
-  thread::spawn(move || {
-    av1an_core::vapoursynth::run(&args.input.path, 0, total_frames as usize - 1, &mut stdin)
+    let mut first_pass = Command::new("aomenc")
+      .args(&[
+        "-",
+        "--threads=8",
+        "-b",
+        "10",
+        "--cpu-used=6",
+        "--end-usage=q",
+        "--tile-columns=2",
+        "--tile-rows=1",
+        "--passes=2",
+        "--pass=1",
+        format!("--fpf={}_fpf", chunk_num).as_str(),
+        "-o",
+        "-",
+      ])
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped())
+      .stdin(Stdio::piped())
+      .spawn()
       .unwrap();
-  });
 
-  let stderr = second_pass.stderr.take().unwrap();
-  let out = PipeStreamReader::new(Box::new(stderr));
+    let bar = ProgressBar::hidden();
 
-  let bar = ProgressBar::hidden();
+    bar.set_length(end as u64 - start as u64 + 1);
+    bar.set_draw_target(ProgressDrawTarget::stderr());
+    bar.set_style(
+      ProgressStyle::default_bar()
+        .template("[{eta_precise}] {prefix:.bold}▕{bar:60.red}▏{msg} ({pos}/{len}) {per_sec}")
+        .progress_chars("█▉▊▋▌▍▎▏  "),
+    );
 
-  bar.set_length(total_frames);
-  bar.set_draw_target(ProgressDrawTarget::stderr());
-  bar.set_style(
-    ProgressStyle::default_bar()
-      .template("[{eta_precise}] {prefix:.bold}▕{bar:60.green}▏{msg} ({pos}/{len}) {per_sec}")
-      .progress_chars("█▉▊▋▌▍▎▏  "),
-  );
+    let mut stdin = first_pass.stdin.take().unwrap();
+    let t = thread::spawn(move || {
+      av1an_core::vapoursynth::run(input, start, end, &mut stdin).unwrap();
+    });
 
-  for line in out.lines {
-    match line {
-      Ok(PipedLine::Line(ref s)) => {
-        if let Some(p) = s
-          .split_terminator('/')
-          .nth(1)
-          .and_then(|s| s.get(s.find("frame").unwrap() + "frame".len()..))
-          .and_then(|x| x.split_ascii_whitespace().next())
-          .and_then(|x| x.parse::<usize>().ok())
-        {
-          bar.set_position(p as u64);
+    let stderr = first_pass.stderr.take().unwrap();
+    let out = PipeStreamReader::new(Box::new(stderr));
+
+    for line in out.lines {
+      match line {
+        Ok(PipedLine::Line(ref s)) => {
+          if let Some(p) = s
+            .split_terminator('/')
+            .nth(1)
+            .and_then(|x| x.get(x.find("frame").unwrap() + "frame".len()..))
+            .and_then(|x| x.split_ascii_whitespace().next())
+            .and_then(|x| x.parse::<usize>().ok())
+          {
+            bar.set_position(p as u64);
+          }
         }
+        _ => (),
       }
-      _ => (),
     }
+
+    t.join().unwrap();
+    first_pass.wait().unwrap();
+    bar.finish();
+
+    println!("Second pass");
+
+    let mut second_pass = Command::new("aomenc")
+      .args(&[
+        "-",
+        "--threads=8",
+        "-b",
+        "10",
+        "--cpu-used=6",
+        "--end-usage=q",
+        "--tile-columns=2",
+        "--tile-rows=1",
+        "--passes=2",
+        "--pass=2",
+        format!("--fpf={}_fpf", chunk_num).as_str(),
+        "-o",
+        format!("{}.ivf", chunk_num).as_str(),
+      ])
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped())
+      .stdin(Stdio::piped())
+      .spawn()
+      .unwrap();
+
+    let mut stdin = second_pass.stdin.take().unwrap();
+
+    let t = thread::spawn(move || {
+      av1an_core::vapoursynth::run(input, start, end, &mut stdin).unwrap();
+    });
+
+    let stderr = second_pass.stderr.take().unwrap();
+    let out = PipeStreamReader::new(Box::new(stderr));
+
+    let bar = ProgressBar::hidden();
+
+    bar.set_length(end as u64 - start as u64 + 1);
+    bar.set_draw_target(ProgressDrawTarget::stderr());
+    bar.set_style(
+      ProgressStyle::default_bar()
+        .template("[{eta_precise}] {prefix:.bold}▕{bar:60.green}▏{msg} ({pos}/{len}) {per_sec}")
+        .progress_chars("█▉▊▋▌▍▎▏  "),
+    );
+
+    for line in out.lines {
+      match line {
+        Ok(PipedLine::Line(ref s)) => {
+          if let Some(p) = s
+            .split_terminator('/')
+            .nth(1)
+            .and_then(|x| x.get(x.find("frame").unwrap() + "frame".len()..))
+            .and_then(|x| x.split_ascii_whitespace().next())
+            .and_then(|x| x.parse::<usize>().ok())
+          {
+            bar.set_position(p as u64);
+          }
+        }
+        _ => (),
+      }
+    }
+
+    t.join().unwrap();
+    second_pass.wait().unwrap();
+    bar.finish();
   }
-
-  bar.finish();
-
-  second_pass.wait().unwrap();
 
   Ok(())
 }

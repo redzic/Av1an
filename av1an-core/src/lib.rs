@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 #[macro_use]
 extern crate log;
 extern crate av_format;

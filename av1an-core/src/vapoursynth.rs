@@ -9,42 +9,26 @@ use failure::{bail, err_msg, format_err, Error, ResultExt};
 extern crate num_rational;
 extern crate vapoursynth;
 
-use clap::{App, Arg};
-use std::ffi::OsStr;
+use std::collections::HashMap;
 use std::fmt::Debug;
-use std::fs::File;
-use std::io::{self, stdout, Stdout, Write};
-use std::ops::Deref;
+use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
-use std::{cell::RefCell, collections::HashMap};
-use std::{cmp, rc::Rc};
 
 use self::num_rational::Ratio;
 use self::vapoursynth::prelude::*;
 use super::*;
-
-// enum OutputTarget {
-//   File(File),
-//   Stdout(Stdout),
-//   Empty,
-// }
 
 struct OutputParameters<'core> {
   node: Node<'core>,
   alpha_node: Option<Node<'core>>,
   start_frame: usize,
   end_frame: usize,
-  requests: usize,
-  y4m: bool,
-  progress: bool,
 }
 
 struct OutputState<'core, W: Write + Send> {
-  // output_target: Box<dyn Write + Send>,
   output_target: W,
-  timecodes_file: Option<File>,
   error: Option<(usize, Error)>,
   reorder_map: HashMap<usize, (Option<FrameRef<'core>>, Option<FrameRef<'core>>)>,
   last_requested_frame: usize,
@@ -61,34 +45,6 @@ struct SharedData<'core, W: Write + Send> {
   output_done_pair: (Mutex<bool>, Condvar),
   output_parameters: OutputParameters<'core>,
   output_state: Mutex<OutputState<'core, W>>,
-}
-
-// impl Write for OutputTarget {
-//   fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-//     match *self {
-//       OutputTarget::File(ref mut file) => file.write(buf),
-//       OutputTarget::Stdout(ref mut out) => out.write(buf),
-//       OutputTarget::Empty => Ok(buf.len()),
-//     }
-//   }
-
-//   fn flush(&mut self) -> io::Result<()> {
-//     match *self {
-//       OutputTarget::File(ref mut file) => file.flush(),
-//       OutputTarget::Stdout(ref mut out) => out.flush(),
-//       OutputTarget::Empty => Ok(()),
-//     }
-//   }
-// }
-
-fn print_version() -> Result<(), Error> {
-  let environment = Environment::new().context("Couldn't create the VSScript environment")?;
-  let core = environment
-    .get_core()
-    .context("Couldn't create the VapourSynth core")?;
-  print!("{}", core.info().version_string);
-
-  Ok(())
 }
 
 // Parses the --arg arguments in form of key=value.
@@ -281,19 +237,17 @@ fn print_frame<W: Write>(writer: &mut W, frame: &Frame) -> Result<(), Error> {
   Ok(())
 }
 
-fn print_frames<W: Write>(
+fn write_frames<W: Write>(
   writer: &mut W,
   parameters: &OutputParameters,
   frame: &Frame,
   alpha_frame: Option<&Frame>,
 ) -> Result<(), Error> {
-  if parameters.y4m {
-    writeln!(writer, "FRAME").context("Couldn't output the frame header")?;
-  }
+  writeln!(writer, "FRAME")?;
 
-  print_frame(writer, frame).context("Couldn't output the frame")?;
+  print_frame(writer, frame)?;
   if let Some(alpha_frame) = alpha_frame {
-    print_frame(writer, alpha_frame).context("Couldn't output the alpha frame")?;
+    print_frame(writer, alpha_frame)?;
   }
 
   Ok(())
@@ -304,16 +258,10 @@ fn update_timecodes<W: Write + Send>(
   state: &mut OutputState<W>,
 ) -> Result<(), Error> {
   let props = frame.props();
-  let duration_num = props
-    .get_int("_DurationNum")
-    .context("Couldn't get the duration numerator")?;
-  let duration_den = props
-    .get_int("_DurationDen")
-    .context("Couldn't get the duration denominator")?;
+  let duration_num = props.get_int("_DurationNum")?;
+  let duration_den = props.get_int("_DurationDen")?;
 
-  if duration_den == 0 {
-    bail!("The duration denominator is zero");
-  }
+  assert!(duration_den != 0);
 
   state.current_timecode += Ratio::new(duration_num, duration_den);
 
@@ -338,20 +286,6 @@ fn frame_done_callback<'core, W: Write + Send + 'core>(
     }
   } else {
     state.callbacks_fired_alpha += 1;
-  }
-
-  // Figure out the FPS.
-  if parameters.progress {
-    let current = Instant::now();
-    let elapsed = current.duration_since(state.last_fps_report_time);
-    let elapsed_seconds = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9;
-
-    if elapsed.as_secs() > 10 {
-      state.fps =
-        Some((state.callbacks_fired - state.last_fps_report_frames) as f64 / elapsed_seconds);
-      state.last_fps_report_time = current;
-      state.last_fps_report_frames = state.callbacks_fired;
-    }
   }
 
   match frame {
@@ -380,17 +314,17 @@ fn frame_done_callback<'core, W: Write + Send + 'core>(
         && state.error.is_none()
       {
         let shared_data_2 = shared_data.clone();
-        parameters
-          .node
-          .get_frame_async(state.last_requested_frame + 1, move |frame, n, node| {
-            frame_done_callback(frame, n, &node, &shared_data_2, false)
-          });
+        parameters.node.get_frame_async(
+          dbg!(state.last_requested_frame + 1),
+          move |frame, n, node| frame_done_callback(frame, n, &node, &shared_data_2, false),
+        );
 
         if let Some(ref alpha_node) = parameters.alpha_node {
           let shared_data_2 = shared_data.clone();
-          alpha_node.get_frame_async(state.last_requested_frame + 1, move |frame, n, node| {
-            frame_done_callback(frame, n, &node, &shared_data_2, true)
-          });
+          alpha_node.get_frame_async(
+            dbg!(state.last_requested_frame + 1),
+            move |frame, n, node| frame_done_callback(frame, n, &node, &shared_data_2, true),
+          );
         }
 
         state.last_requested_frame += 1;
@@ -408,7 +342,7 @@ fn frame_done_callback<'core, W: Write + Send + 'core>(
 
         let frame = frame.unwrap();
         if state.error.is_none() {
-          if let Err(error) = print_frames(
+          if let Err(error) = write_frames(
             &mut state.output_target,
             parameters,
             &frame,
@@ -418,41 +352,9 @@ fn frame_done_callback<'core, W: Write + Send + 'core>(
           }
         }
 
-        if state.timecodes_file.is_some() && state.error.is_none() {
-          let timecode = (*state.current_timecode.numer() as f64 * 1000f64)
-            / *state.current_timecode.denom() as f64;
-          match writeln!(state.timecodes_file.as_mut().unwrap(), "{:.6}", timecode)
-            .context("Couldn't output the timecode")
-          {
-            Err(error) => state.error = Some((n, error.into())),
-            Ok(()) => {
-              if let Err(error) =
-                update_timecodes(&frame, &mut state).context("Couldn't update the timecodes")
-              {
-                state.error = Some((n, error.into()));
-              }
-            }
-          }
-        }
-
         state.next_output_frame += 1;
       }
     }
-  }
-
-  // Output the progress info.
-  if parameters.progress {
-    eprint!(
-      "Frame: {}/{}",
-      state.callbacks_fired,
-      parameters.end_frame - parameters.start_frame + 1
-    );
-
-    if let Some(fps) = state.fps {
-      eprint!(" ({:.2} fps)", fps);
-    }
-
-    eprint!("\r");
   }
 
   // if state.next_output_frame == parameters.end_frame + 1 {
@@ -466,87 +368,21 @@ fn frame_done_callback<'core, W: Write + Send + 'core>(
 
 fn output<W: Write + Send + Sync>(
   mut out: &mut W,
-  mut timecodes_file: Option<File>,
   parameters: OutputParameters,
 ) -> Result<(), Error> {
-  // Print the y4m header.
-  if parameters.y4m {
-    if parameters.alpha_node.is_some() {
-      bail!("Can't apply y4m headers to a clip with alpha");
-    }
-
-    print_y4m_header(&mut out, &parameters.node).context("Couldn't write the y4m header")?;
-  }
-
-  // Print the timecodes header.
-  if let Some(ref mut timecodes_file) = timecodes_file {
-    writeln!(timecodes_file, "# timecode format v2")?;
-  }
-
-  let initial_requests = cmp::min(
-    parameters.requests,
-    parameters.end_frame - parameters.start_frame + 1,
+  assert!(
+    parameters.alpha_node.is_none(),
+    "Can't apply y4m headers to a clip with alpha"
   );
 
-  let output_done_pair = (Mutex::new(false), Condvar::new());
-  let output_state = Mutex::new(OutputState {
-    output_target: out,
-    timecodes_file,
-    error: None,
-    reorder_map: HashMap::new(),
-    last_requested_frame: parameters.start_frame + initial_requests - 1,
-    next_output_frame: 0,
-    current_timecode: Ratio::from_integer(0),
-    callbacks_fired: 0,
-    callbacks_fired_alpha: 0,
-    last_fps_report_time: Instant::now(),
-    last_fps_report_frames: 0,
-    fps: None,
-  });
-  let shared_data = Arc::new(SharedData {
-    output_done_pair,
-    output_parameters: parameters,
-    output_state,
-  });
+  print_y4m_header(&mut out, &parameters.node)?;
 
-  // Record the start time.
-  let start_time = Instant::now();
-
-  // Start off by requesting some frames.
-  {
-    let parameters = &shared_data.output_parameters;
-    for n in 0..initial_requests {
-      let shared_data_2 = shared_data.clone();
-      parameters.node.get_frame_async(n, move |frame, n, node| {
-        frame_done_callback(frame, n, &node, &shared_data_2, false)
-      });
-
-      if let Some(ref alpha_node) = parameters.alpha_node {
-        let shared_data_2 = shared_data.clone();
-        alpha_node.get_frame_async(n, move |frame, n, node| {
-          frame_done_callback(frame, n, &node, &shared_data_2, true)
-        });
-      }
-    }
+  for n in parameters.start_frame..=parameters.end_frame {
+    let frame = parameters.node.get_frame(n).unwrap();
+    write_frames(&mut out, &parameters, &frame, None)?;
   }
 
-  let &(ref lock, ref cvar) = &shared_data.output_done_pair;
-  let mut done = lock.lock().unwrap();
-  while !*done {
-    done = cvar.wait(done).unwrap();
-  }
-
-  let mut state = shared_data.output_state.lock().unwrap();
-
-  if let Some((n, ref msg)) = state.error {
-    bail!("Failed to retrieve frame {} with error: {}", n, msg);
-  }
-
-  // Flush the output file.
-  state
-    .output_target
-    .flush()
-    .context("Failed to flush the output file")?;
+  out.flush()?;
 
   Ok(())
 }
@@ -558,15 +394,11 @@ pub fn run<W: Write + Send + Sync>(
   end_frame: usize,
   out: &mut W,
 ) -> Result<(), Error> {
-  let timecodes_file = None;
-
   // Create a new VSScript environment.
   let mut environment = Environment::new().context("Couldn't create the VSScript environment")?;
 
   // Evaluate the script.
-  environment
-    .eval_file(input, EvalFlags::SetWorkingDir)
-    .context("Script evaluation failed")?;
+  environment.eval_file(input, EvalFlags::SetWorkingDir)?;
 
   // Get the output node.
   let output_index = 0;
@@ -589,13 +421,13 @@ pub fn run<W: Write + Send + Sync>(
     let info = node.info();
 
     if let Property::Variable = info.format {
-      bail!("Cannot output clips with varying format");
+      panic!("Cannot output clips with varying format");
     }
     if let Property::Variable = info.resolution {
-      bail!("Cannot output clips with varying dimensions");
+      panic!("Cannot output clips with varying dimensions");
     }
     if let Property::Variable = info.framerate {
-      bail!("Cannot output clips with varying framerate");
+      panic!("Cannot output clips with varying framerate");
     }
 
     #[cfg(feature = "gte-vapoursynth-api-32")]
@@ -606,7 +438,7 @@ pub fn run<W: Write + Send + Sync>(
       match info.num_frames {
         Property::Variable => {
           // TODO: make it possible?
-          bail!("Cannot output clips with unknown length");
+          panic!("Cannot output clips with unknown length");
         }
         Property::Constant(x) => x,
       }
@@ -616,40 +448,17 @@ pub fn run<W: Write + Send + Sync>(
   };
 
   // Check if the input start and end frames make sense.
-  if end_frame < start_frame || end_frame >= num_frames {
-    bail!(
-      "Invalid range of frames to output specified:\n\
-                     first: {}\n\
-                     last: {}\n\
-                     clip length: {}\n\
-                     frames to output: {}",
-      start_frame,
-      end_frame,
-      num_frames,
-      end_frame
-        .checked_sub(start_frame)
-        .and_then(|x| x.checked_add(1))
-        .map(|x| format!("{}", x))
-        .unwrap_or_else(|| "<overflow>".to_owned())
-    );
-  }
-
-  let requests = environment.get_core().unwrap().info().num_threads;
+  assert!(!(end_frame < start_frame || end_frame >= num_frames));
 
   output(
     out,
-    timecodes_file,
     OutputParameters {
       node,
       alpha_node,
       start_frame: start_frame as usize,
       end_frame: end_frame as usize,
-      requests,
-      y4m: true,
-      progress: false,
     },
-  )
-  .context("Couldn't output the frames")?;
+  )?;
 
   Ok(())
 }
@@ -659,9 +468,7 @@ pub fn get_num_frames(path: &Path) -> Result<usize, Error> {
   let mut environment = Environment::new().context("Couldn't create the VSScript environment")?;
 
   // Evaluate the script.
-  environment
-    .eval_file(path, EvalFlags::SetWorkingDir)
-    .context("Script evaluation failed")?;
+  environment.eval_file(path, EvalFlags::SetWorkingDir)?;
 
   // Get the output node.
   let output_index = 0;

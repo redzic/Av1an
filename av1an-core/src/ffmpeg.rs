@@ -1,8 +1,7 @@
-use failure::Error;
 use regex::Regex;
 use std::fs::{read_dir, File};
 use std::io::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::Encoder;
