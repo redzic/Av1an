@@ -5,6 +5,8 @@ use av1an_core::{
 use clap::AppSettings::ColoredHelp;
 use clap::Clap;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use rayon::iter::ParallelIterator;
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::process::{Command, Stdio};
@@ -341,113 +343,118 @@ pub fn main() -> anyhow::Result<()> {
   BAR.finish();
 
   let splits = create_video_queue_vs(&args.input.path, &scene_changes);
+
+  let splits_ref = unsafe { std::mem::transmute::<_, &'static [_]>(splits.as_slice()) };
+
   let (tx, rx) = mpsc::channel();
 
   // TODO fix threading
   thread::spawn(move || {
-    for (chunk_num, (start, end)) in splits {
-      let mut first_pass = Command::new("aomenc")
-        .args(&[
-          "-",
-          "--threads=8",
-          "-b",
-          "10",
-          "--cpu-used=6",
-          "--end-usage=q",
-          "--tile-columns=2",
-          "--tile-rows=1",
-          "--passes=2",
-          "--pass=1",
-          format!("--fpf={}_fpf", chunk_num).as_str(),
-          "-o",
-          "-",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
+    splits_ref
+      .par_iter()
+      .for_each_with(tx, |tx, (chunk_num, (start, end))| {
+        let mut first_pass = Command::new("aomenc")
+          .args(&[
+            "-",
+            "--threads=8",
+            "-b",
+            "10",
+            "--cpu-used=6",
+            "--end-usage=q",
+            "--tile-columns=2",
+            "--tile-rows=1",
+            "--passes=2",
+            "--pass=1",
+            format!("--fpf={}_fpf", chunk_num).as_str(),
+            "-o",
+            "-",
+          ])
+          .stdout(Stdio::piped())
+          .stderr(Stdio::piped())
+          .stdin(Stdio::piped())
+          .spawn()
+          .unwrap();
 
-      let mut stdin = first_pass.stdin.take().unwrap();
-      let vspipe = thread::spawn(move || {
-        av1an_core::vapoursynth::run(input, start, end, &mut stdin).unwrap();
-      });
+        let mut stdin = first_pass.stdin.take().unwrap();
+        let vspipe = thread::spawn(move || {
+          av1an_core::vapoursynth::run(input, *start, *end, &mut stdin).unwrap();
+        });
 
-      let stderr = first_pass.stderr.take().unwrap();
-      let out = PipeStreamReader::new(Box::new(stderr));
+        let stderr = first_pass.stderr.take().unwrap();
+        let out = PipeStreamReader::new(Box::new(stderr));
 
-      for line in out.lines {
-        match line {
-          Ok(PipedLine::Line(ref s)) => {
-            if let Some(p) = s
-              .split_terminator('/')
-              .nth(1)
-              .and_then(|x| x.get(x.find("frame").unwrap() + "frame".len()..))
-              .and_then(|x| x.split_ascii_whitespace().next())
-              .and_then(|x| x.parse::<usize>().ok())
-            {
-              tx.send((p, chunk_num, 1u8)).unwrap();
+        for line in out.lines {
+          match line {
+            Ok(PipedLine::Line(ref s)) => {
+              if let Some(p) = s
+                .split_terminator('/')
+                .nth(1)
+                .and_then(|x| x.get(x.find("frame").unwrap() + "frame".len()..))
+                .and_then(|x| x.split_ascii_whitespace().next())
+                .and_then(|x| x.parse::<usize>().ok())
+              {
+                tx.send((p, chunk_num, 1u8)).unwrap();
+              }
             }
+            _ => break,
           }
-          _ => break,
         }
-      }
 
-      vspipe.join().unwrap();
-      first_pass.wait().unwrap();
+        vspipe.join().unwrap();
+        first_pass.wait().unwrap();
 
-      let mut second_pass = Command::new("aomenc")
-        .args(&[
-          "-",
-          "--threads=8",
-          "-b",
-          "10",
-          "--cpu-used=6",
-          "--end-usage=q",
-          "--tile-columns=2",
-          "--tile-rows=1",
-          "--passes=2",
-          "--pass=2",
-          format!("--fpf={}_fpf", chunk_num).as_str(),
-          "-o",
-          format!("{}.ivf", chunk_num).as_str(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
+        let mut second_pass = Command::new("aomenc")
+          .args(&[
+            "-",
+            "--threads=8",
+            "-b",
+            "10",
+            "--cpu-used=6",
+            "--end-usage=q",
+            "--tile-columns=2",
+            "--tile-rows=1",
+            "--passes=2",
+            "--pass=2",
+            format!("--fpf={}_fpf", chunk_num).as_str(),
+            "-o",
+            format!("{}.ivf", chunk_num).as_str(),
+          ])
+          .stdout(Stdio::piped())
+          .stderr(Stdio::piped())
+          .stdin(Stdio::piped())
+          .spawn()
+          .unwrap();
 
-      let mut stdin = second_pass.stdin.take().unwrap();
+        let mut stdin = second_pass.stdin.take().unwrap();
 
-      let vspipe = thread::spawn(move || {
-        av1an_core::vapoursynth::run(input, start, end, &mut stdin).unwrap();
-      });
+        let vspipe = thread::spawn(move || {
+          av1an_core::vapoursynth::run(input, *start, *end, &mut stdin).unwrap();
+        });
 
-      let stderr = second_pass.stderr.take().unwrap();
-      let out = PipeStreamReader::new(Box::new(stderr));
+        let stderr = second_pass.stderr.take().unwrap();
+        let out = PipeStreamReader::new(Box::new(stderr));
 
-      for line in out.lines {
-        match line {
-          Ok(PipedLine::Line(ref s)) => {
-            // dbg!(s);
-            if let Some(p) = s
-              .split_terminator('/')
-              .nth(1)
-              .and_then(|x| x.get(x.find("frame").unwrap() + "frame".len()..))
-              .and_then(|x| x.split_ascii_whitespace().next())
-              .and_then(|x| x.parse::<usize>().ok())
-            {
-              tx.send((p, chunk_num, 2u8)).unwrap();
+        for line in out.lines {
+          match line {
+            Ok(PipedLine::Line(ref s)) => {
+              // dbg!(s);
+              if let Some(p) = s
+                .split_terminator('/')
+                .nth(1)
+                .and_then(|x| x.get(x.find("frame").unwrap() + "frame".len()..))
+                .and_then(|x| x.split_ascii_whitespace().next())
+                .and_then(|x| x.parse::<usize>().ok())
+              {
+                tx.send((p, chunk_num, 2u8)).unwrap();
+              }
             }
+            _ => break,
           }
-          _ => break,
         }
-      }
 
-      vspipe.join().unwrap();
-      second_pass.wait().unwrap();
-    }
+        vspipe.join().unwrap();
+        second_pass.wait().unwrap();
+      });
   });
 
   let mut first_pass_progress: HashMap<usize, usize> = HashMap::new();
@@ -473,7 +480,7 @@ pub fn main() -> anyhow::Result<()> {
 
   while let Ok((frames, chunk_num, pass)) = rx.recv() {
     if pass == 1 {
-      first_pass_progress.insert(chunk_num, frames);
+      first_pass_progress.insert(*chunk_num, frames);
       let position = first_pass_progress
         .iter()
         .map(|(_, frames)| *frames)
@@ -481,7 +488,7 @@ pub fn main() -> anyhow::Result<()> {
       fp.set_position(position);
       fp.set_message(format!("{:3}%", 100 * position / total_frames));
     } else {
-      second_pass_progress.insert(chunk_num, frames);
+      second_pass_progress.insert(*chunk_num, frames);
       let position = second_pass_progress
         .iter()
         .map(|(_, frames)| *frames)
