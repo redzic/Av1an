@@ -232,7 +232,6 @@ static BAR: ProgressBar = ProgressBar::hidden();
 use std::io;
 use std::string::FromUtf8Error;
 use std::sync::mpsc::channel;
-use std::thread::spawn;
 
 #[derive(Debug)]
 enum PipeError {
@@ -259,7 +258,7 @@ impl PipeStreamReader {
       lines: {
         let (tx, rx) = channel();
 
-        spawn(move || {
+        thread::spawn(move || {
           let mut buf = Vec::new();
           let mut byte = [0u8];
           loop {
@@ -342,18 +341,15 @@ pub fn main() -> anyhow::Result<()> {
   BAR.finish();
 
   let splits = create_video_queue_vs(&args.input.path, &scene_changes);
-
   let (tx, rx) = mpsc::channel();
 
-  let mut handles = Vec::with_capacity(8);
-
-  for (chunk_num, (start, end)) in splits {
-    let tx = tx.clone();
-    handles.push(thread::spawn(move || {
+  // TODO fix threading
+  thread::spawn(move || {
+    for (chunk_num, (start, end)) in splits {
       let mut first_pass = Command::new("aomenc")
         .args(&[
           "-",
-          "--threads=4",
+          "--threads=8",
           "-b",
           "10",
           "--cpu-used=6",
@@ -393,7 +389,7 @@ pub fn main() -> anyhow::Result<()> {
               tx.send((p, chunk_num, 1u8)).unwrap();
             }
           }
-          _ => (),
+          _ => break,
         }
       }
 
@@ -403,7 +399,7 @@ pub fn main() -> anyhow::Result<()> {
       let mut second_pass = Command::new("aomenc")
         .args(&[
           "-",
-          "--threads=4",
+          "--threads=8",
           "-b",
           "10",
           "--cpu-used=6",
@@ -434,6 +430,7 @@ pub fn main() -> anyhow::Result<()> {
       for line in out.lines {
         match line {
           Ok(PipedLine::Line(ref s)) => {
+            // dbg!(s);
             if let Some(p) = s
               .split_terminator('/')
               .nth(1)
@@ -444,16 +441,17 @@ pub fn main() -> anyhow::Result<()> {
               tx.send((p, chunk_num, 2u8)).unwrap();
             }
           }
-          _ => (),
+          _ => break,
         }
       }
 
       vspipe.join().unwrap();
-    }));
-  }
+      second_pass.wait().unwrap();
+    }
+  });
 
-  let mut first_pass_progress: HashMap<usize, usize> = HashMap::with_capacity(handles.len());
-  let mut second_pass_progress: HashMap<usize, usize> = HashMap::with_capacity(handles.len());
+  let mut first_pass_progress: HashMap<usize, usize> = HashMap::new();
+  let mut second_pass_progress: HashMap<usize, usize> = HashMap::new();
 
   let m = MultiProgress::new();
 
@@ -496,8 +494,5 @@ pub fn main() -> anyhow::Result<()> {
   fp.finish();
   sp.finish();
 
-  for handle in handles {
-    handle.join().unwrap();
-  }
   Ok(())
 }
