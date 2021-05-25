@@ -2,10 +2,6 @@ use av_scenechange::{
   detect_scene_changes, new_detector, DetectionOptions, DetectionResults, ProgressCallback,
 };
 use std::path::Path;
-use std::sync::Arc;
-use v_frame::prelude::Pixel;
-
-use std::io::prelude::*;
 use std::process::{Command, Stdio};
 
 /// Detect scene changes using rav1e scene detector.

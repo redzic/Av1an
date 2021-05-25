@@ -1,26 +1,24 @@
-use av1an_core::chunk;
-use av1an_core::{
-  chunk::create_video_queue_vs, scenedetect, ChunkMethod, ConcatMethod, Encoder, SplitMethod,
-};
+use av1an_core::chunk::create_video_queue_vs;
+use av1an_core::{scenedetect, ChunkMethod, ConcatMethod, Encoder, SplitMethod};
 use clap::AppSettings::ColoredHelp;
 use clap::Clap;
+use dialoguer::theme::ColorfulTheme;
+use dialoguer::Confirm;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use rayon::iter::ParallelIterator;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator};
+use log::{error, info, warn};
+use rayon::prelude::*;
+use static_init::dynamic;
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::process::{Command, Stdio};
-use std::sync::mpsc::Receiver;
-use std::thread;
-use thiserror::Error;
-
-use dialoguer::Confirm;
-
-use dialoguer::theme::ColorfulTheme;
-use log::{error, info, warn};
-use static_init::dynamic;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::process::{Command, Stdio};
+use std::string::FromUtf8Error;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Sender};
+use std::thread;
+use std::time::Instant;
+use thiserror::Error;
 
 // TODO refactor to having InputType
 #[derive(Debug)]
@@ -231,10 +229,6 @@ pub fn validate_args(args: &Args) -> Result<(), CliError> {
 #[dynamic]
 static BAR: ProgressBar = ProgressBar::hidden();
 
-use std::io;
-use std::string::FromUtf8Error;
-use std::sync::mpsc::channel;
-
 #[derive(Debug)]
 enum PipeError {
   IO(io::Error),
@@ -258,7 +252,7 @@ impl PipeStreamReader {
   fn new(mut stream: Box<dyn io::Read + Send>) -> PipeStreamReader {
     PipeStreamReader {
       lines: {
-        let (tx, rx) = channel();
+        let (tx, rx) = mpsc::channel();
 
         thread::spawn(move || {
           let mut buf = Vec::new();
@@ -332,6 +326,8 @@ pub fn main() -> anyhow::Result<()> {
   BAR.set_draw_target(ProgressDrawTarget::stdout());
   BAR.set_prefix("Scene detection");
 
+  let encode_start_time = Instant::now();
+
   let scene_changes = scenedetect::get_scene_changes(
     &args.input.path,
     Some(Box::new(|frames, _| {
@@ -343,30 +339,37 @@ pub fn main() -> anyhow::Result<()> {
   BAR.finish();
 
   let splits = create_video_queue_vs(&args.input.path, &scene_changes);
+  let splits = unsafe { std::mem::transmute::<_, &'static [_]>(splits.as_slice()) };
 
-  let splits_ref = unsafe { std::mem::transmute::<_, &'static [_]>(splits.as_slice()) };
+  let (tx, rx): (Sender<(usize, usize, u8)>, _) = mpsc::channel();
 
-  let (tx, rx) = mpsc::channel();
+  rayon::ThreadPoolBuilder::new()
+    .num_threads(8)
+    .build_global()
+    .unwrap();
 
   // TODO fix threading
   thread::spawn(move || {
-    splits_ref
+    splits
       .par_iter()
+      // .for_each_with(tx, |tx, (start, end, chunk_num): &(usize, usize, usize)| {
       .for_each_with(tx, |tx, (chunk_num, (start, end))| {
+        let log = format!("fpf{}.log", chunk_num);
         let mut first_pass = Command::new("aomenc")
           .args(&[
-            "-",
+            "--passes=2",
+            "--pass=1",
             "--threads=8",
             "-b",
             "10",
             "--cpu-used=6",
             "--end-usage=q",
+            "--cq-level=30",
             "--tile-columns=2",
             "--tile-rows=1",
-            "--passes=2",
-            "--pass=1",
-            format!("--fpf={}_fpf", chunk_num).as_str(),
+            format!("--fpf={}", log).as_str(),
             "-o",
+            "/dev/null",
             "-",
           ])
           .stdout(Stdio::piped())
@@ -377,7 +380,7 @@ pub fn main() -> anyhow::Result<()> {
 
         let mut stdin = first_pass.stdin.take().unwrap();
         let vspipe = thread::spawn(move || {
-          av1an_core::vapoursynth::run(input, *start, *end, &mut stdin).unwrap();
+          av1an_core::vapoursynth::run(input, *start, *end, &mut stdin).unwrap()
         });
 
         let stderr = first_pass.stderr.take().unwrap();
@@ -385,7 +388,7 @@ pub fn main() -> anyhow::Result<()> {
 
         for line in out.lines {
           match line {
-            Ok(PipedLine::Line(ref s)) => {
+            Ok(PipedLine::Line(s)) => {
               if let Some(p) = s
                 .split_terminator('/')
                 .nth(1)
@@ -393,7 +396,7 @@ pub fn main() -> anyhow::Result<()> {
                 .and_then(|x| x.split_ascii_whitespace().next())
                 .and_then(|x| x.parse::<usize>().ok())
               {
-                tx.send((p, chunk_num, 1u8)).unwrap();
+                tx.send((p, *chunk_num, 1u8)).unwrap();
               }
             }
             _ => break,
@@ -403,21 +406,29 @@ pub fn main() -> anyhow::Result<()> {
         vspipe.join().unwrap();
         first_pass.wait().unwrap();
 
+        let log_path = Path::new(log.as_str());
+        while !log_path.exists() {
+          // wait for first pass file to exist, because it's actually not guaranteed
+          // to exist even after waiting for the first pass thread to finish
+          // if it doesn't exist, the second pass crashes
+        }
+
         let mut second_pass = Command::new("aomenc")
           .args(&[
-            "-",
+            "--passes=2",
+            "--pass=2",
             "--threads=8",
             "-b",
             "10",
             "--cpu-used=6",
             "--end-usage=q",
+            "--cq-level=30",
             "--tile-columns=2",
             "--tile-rows=1",
-            "--passes=2",
-            "--pass=2",
-            format!("--fpf={}_fpf", chunk_num).as_str(),
+            format!("--fpf={}", log).as_str(),
             "-o",
             format!("{}.ivf", chunk_num).as_str(),
+            "-",
           ])
           .stdout(Stdio::piped())
           .stderr(Stdio::piped())
@@ -428,7 +439,7 @@ pub fn main() -> anyhow::Result<()> {
         let mut stdin = second_pass.stdin.take().unwrap();
 
         let vspipe = thread::spawn(move || {
-          av1an_core::vapoursynth::run(input, *start, *end, &mut stdin).unwrap();
+          av1an_core::vapoursynth::run(input, *start, *end, &mut stdin).unwrap()
         });
 
         let stderr = second_pass.stderr.take().unwrap();
@@ -436,8 +447,7 @@ pub fn main() -> anyhow::Result<()> {
 
         for line in out.lines {
           match line {
-            Ok(PipedLine::Line(ref s)) => {
-              // dbg!(s);
+            Ok(PipedLine::Line(s)) => {
               if let Some(p) = s
                 .split_terminator('/')
                 .nth(1)
@@ -445,7 +455,7 @@ pub fn main() -> anyhow::Result<()> {
                 .and_then(|x| x.split_ascii_whitespace().next())
                 .and_then(|x| x.parse::<usize>().ok())
               {
-                tx.send((p, chunk_num, 2u8)).unwrap();
+                tx.send((p, *chunk_num, 2u8)).unwrap();
               }
             }
             _ => break,
@@ -480,7 +490,7 @@ pub fn main() -> anyhow::Result<()> {
 
   while let Ok((frames, chunk_num, pass)) = rx.recv() {
     if pass == 1 {
-      first_pass_progress.insert(*chunk_num, frames);
+      first_pass_progress.insert(chunk_num, frames);
       let position = first_pass_progress
         .iter()
         .map(|(_, frames)| *frames)
@@ -488,7 +498,7 @@ pub fn main() -> anyhow::Result<()> {
       fp.set_position(position);
       fp.set_message(format!("{:3}%", 100 * position / total_frames));
     } else {
-      second_pass_progress.insert(*chunk_num, frames);
+      second_pass_progress.insert(chunk_num, frames);
       let position = second_pass_progress
         .iter()
         .map(|(_, frames)| *frames)
@@ -500,6 +510,8 @@ pub fn main() -> anyhow::Result<()> {
 
   fp.finish();
   sp.finish();
+
+  println!("Took {:?}", encode_start_time.elapsed());
 
   Ok(())
 }

@@ -23,9 +23,8 @@ pub fn segment(input: &Path, temp: &Path, segments: Vec<usize>) {
     "0",
   ]);
 
-  if segments.len() > 0 {
+  if !segments.is_empty() {
     let segments_to_string = segments
-      .clone()
       .iter()
       .map(|x| x.to_string())
       .collect::<Vec<String>>();
@@ -56,7 +55,7 @@ pub fn extra_splits(
 ) -> Vec<usize> {
   let mut result_vec: Vec<usize> = split_locations.clone();
 
-  let mut total_length = split_locations.clone();
+  let mut total_length = split_locations;
   total_length.insert(0, 0);
   total_length.push(total_frames);
 
@@ -75,7 +74,7 @@ pub fn extra_splits(
     }
   }
 
-  result_vec.sort();
+  result_vec.sort_unstable();
 
   result_vec
 }
