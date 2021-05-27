@@ -4,31 +4,27 @@ extern crate av_format;
 extern crate av_ivf;
 extern crate failure;
 
-use chunk::create_video_queue_vs;
-use clap::Clap;
-use regex::Regex;
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
-use std::{fs::File, io::Write};
-use std::{
-  io::Split,
-  path::{Path, PathBuf},
-};
 use sysinfo::SystemExt;
 use thiserror::Error;
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 pub mod chunk;
 pub mod concat;
 pub mod encoder;
 pub mod ffmpeg;
-pub mod manager;
 pub mod scenedetect;
 pub mod split;
 pub mod target_quality;
 pub mod vapoursynth;
 
 #[allow(non_camel_case_types)]
-#[derive(Clap, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoder {
   aom,
   rav1e,
@@ -54,8 +50,8 @@ impl FromStr for Encoder {
       "aom" => Ok(Self::aom),
       "rav1e" => Ok(Self::rav1e),
       "vpx" => Ok(Self::libvpx),
-      "svt_av1" => Ok(Self::svt_av1),
-      "svt_vp9" => Ok(Self::svt_vp9),
+      "svt-av1" => Ok(Self::svt_av1),
+      "svt-vp9" => Ok(Self::svt_vp9),
       "x264" => Ok(Self::x264),
       "x265" => Ok(Self::x265),
       _ => Err(EncoderParseError::InvalidEncoder),
@@ -147,67 +143,10 @@ impl FromStr for ChunkMethod {
   }
 }
 
-pub struct EncodeConfig {
-  frames: usize,
-  counter: (),
-  is_vs: bool,
-  input: PathBuf,
-  temp: PathBuf,
-  output_file: PathBuf,
-
-  concat_method: ConcatMethod,
-  config: (),
-  webm: (),
-  chunk_method: ChunkMethod,
-  scenes: PathBuf,
-  split_method: SplitMethod,
-  extra_split: usize,
-  min_scene_len: usize,
-  // PySceneDetect split
-  threshold: f32,
-
-  // TODO refactor, this should really be in the enum of each encoder
-  reuse_first_pass: bool,
-
-  // Encoding
-  passes: (),
-  video_params: (),
-  encoder: Encoder,
-  workers: usize,
-
-  // FFmpeg params
-  ffmpeg_pipe: (),
-  ffmpeg: (),
-  audio_params: (),
-  pix_format: (),
-
-  quiet: bool,
-  logging: (),
-  resume: bool,
-  no_check: bool,
-  keep: bool,
-  force: bool,
-
-  // VMAF
-  vmaf: bool,
-  vmaf_path: PathBuf,
-  vmaf_res: (),
-
-  // TODO refactor into VMAF struct, and this struct contains an Option<VMAF> or something
-  // which indicates whether or not the encode uses target_quality/vmaf
-
-  // except for the vmaf options which you can use regardless of target_quality, like the
-  // vmaf plot option
-
-  // Target quality
-  target_quality: u8,
-  probes: u16,
-  min_q: u8,
-  max_q: u8,
-  vmaf_plots: bool,
-  probing_rate: u32,
-  n_threads: usize,
-  vmaf_filter: (),
+pub fn hash_path(path: &Path) -> PathBuf {
+  let mut s = DefaultHasher::new();
+  path.hash(&mut s);
+  PathBuf::from(&format!(".{}", s.finish())[..8])
 }
 
 /// Check for FFmpeg
@@ -246,10 +185,4 @@ pub fn determine_workers(encoder: Encoder) -> u64 {
     },
     1,
   )
-}
-
-pub fn segment_first_pass() {}
-
-pub fn encode_file(input: &Path, split_locations: &[usize]) {
-  create_video_queue_vs(input, split_locations);
 }

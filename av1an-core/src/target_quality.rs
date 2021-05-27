@@ -143,7 +143,7 @@ pub fn construct_target_quality_command(encoder: Encoder, threads: usize, q: &st
       "-enc-mode".into(),
       "8".into(),
       "-q".into(),
-      format!("{}", q),
+      q.to_string(),
     ],
     Encoder::x264 => vec![
       "x264".into(),
@@ -158,7 +158,7 @@ pub fn construct_target_quality_command(encoder: Encoder, threads: usize, q: &st
       "--preset".into(),
       "medium".into(),
       "--crf".into(),
-      format!("{}", q),
+      q.to_string(),
     ],
     Encoder::x265 => vec![
       "x265".into(),
@@ -167,11 +167,11 @@ pub fn construct_target_quality_command(encoder: Encoder, threads: usize, q: &st
       "--no-progress".into(),
       "--y4m".into(),
       "--frame-threads".into(),
-      format!("{}", cmp::min(threads, 16)),
+      cmp::min(threads, 16).to_string(),
       "--preset".into(),
       "fast".into(),
       "--crf".into(),
-      format!("{}", q),
+      q.to_string(),
     ],
   }
 }

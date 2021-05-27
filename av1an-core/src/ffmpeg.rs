@@ -64,7 +64,7 @@ pub fn get_keyframes(source: &Path) -> Vec<usize> {
 
   let re = Regex::new(r".*n:([0-9]+)\.[0-9]+ pts:.+key:1").unwrap();
   let output = String::from_utf8(out.stderr).unwrap();
-  let mut kfs: Vec<usize> = vec![];
+  let mut kfs: Vec<usize> = Vec::new();
   for found in re.captures_iter(&output) {
     kfs.push(found.get(1).unwrap().as_str().parse::<usize>().unwrap());
   }
@@ -149,7 +149,6 @@ pub fn extract_audio(input: &Path, temp: &Path, audio_params: Vec<String>) {
 
 /// Concatenates using ffmpeg
 pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
-  let out = Path::new(&output);
   let concat = &temp.join("concat");
   let concat_file = concat.to_str().unwrap();
 
@@ -157,7 +156,7 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
 
   let audio_file = Path::new(&temp).join("audio.mkv");
 
-  let mut audio_cmd = vec![];
+  let mut audio_cmd = Vec::new();
 
   if audio_file.exists() && audio_file.metadata().unwrap().len() > 1000 {
     audio_cmd = vec!["-i", audio_file.to_str().unwrap(), "-c", "copy"];
@@ -196,7 +195,6 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
         "mp4",
         output.to_str().unwrap(),
       ]),
-
     _ => cmd
       .args(&[
         "-y",
@@ -244,7 +242,7 @@ pub fn get_frame_types(file: &Path) -> Vec<String> {
 
   let output = String::from_utf8(out.stderr).unwrap();
 
-  let str_vec = output.split("\n").collect::<Vec<_>>();
+  let str_vec = output.split('\n').collect::<Vec<_>>();
 
   let string_vec: Vec<String> = str_vec.iter().map(|x| x.to_string()).collect();
 

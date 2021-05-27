@@ -1,31 +1,34 @@
-use av1an_core::chunk::create_video_queue_vs;
-use av1an_core::{scenedetect, ChunkMethod, ConcatMethod, Encoder, SplitMethod};
-use clap::AppSettings::ColoredHelp;
-use clap::Clap;
-use dialoguer::theme::ColorfulTheme;
-use dialoguer::Confirm;
-use fnv::FnvHashMap;
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use log::{error, info, warn};
-use rayon::prelude::*;
-use static_init::dynamic;
+#![feature(core_intrinsics)]
+
 use std::ffi::OsStr;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::string::FromUtf8Error;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
+
+use av1an_core::chunk::create_video_queue_vs;
+use av1an_core::{scenedetect, ChunkMethod, ConcatMethod, Encoder, SplitMethod};
+
+use clap::AppSettings::ColoredHelp;
+use clap::Clap;
+use dialoguer::theme::ColorfulTheme;
+use dialoguer::Confirm;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+
+use circular_queue::CircularQueue;
+use log::{error, info, warn};
+use rayon::prelude::*;
 use thiserror::Error;
 
-// TODO refactor to having InputType
 #[derive(Debug)]
 pub enum InputType {
   /// Vapoursynth (.vpy, .py) input source
   Vapoursynth,
-  /// Normal video input in a container
+  /// Video input in file in a container (ex: .mkv, .mp4)
   Video,
 }
 
@@ -132,7 +135,7 @@ pub struct Args {
   #[clap(short, long)]
   video_params: Option<String>,
 
-  #[clap(short, long, arg_enum, default_value = "aom")]
+  #[clap(short, long, default_value = "aom", possible_values=&["aom", "rav1e", "libvpx", "svt-av1", "svt-vp9", "x264", "x265"])]
   encoder: Encoder,
 
   /// Number of workers
@@ -226,9 +229,6 @@ pub fn validate_args(args: &Args) -> Result<(), CliError> {
   Ok(())
 }
 
-#[dynamic]
-static BAR: ProgressBar = ProgressBar::hidden();
-
 #[derive(Debug)]
 enum PipeError {
   IO(io::Error),
@@ -238,7 +238,7 @@ enum PipeError {
 #[derive(Debug)]
 enum PipedLine {
   Line(String),
-  EOF,
+  Eof,
 }
 
 // Reads data from the pipe byte-by-byte and returns the lines.
@@ -260,7 +260,7 @@ impl PipeStreamReader {
           loop {
             match stream.read(&mut byte) {
               Ok(0) => {
-                let _ = tx.send(Ok(PipedLine::EOF));
+                let _ = tx.send(Ok(PipedLine::Eof));
                 break;
               }
               Ok(_) => {
@@ -288,14 +288,39 @@ impl PipeStreamReader {
   }
 }
 
+/// Unicode characters used to create a "finer" or smoother-looking progress bar.
+const FINE_PROGRESS_CHARS: &str = "█▉▊▋▌▍▎▏  ";
+
 pub fn main() -> anyhow::Result<()> {
   let args: Args = Args::parse();
 
   validate_args(&args)?;
 
-  // This is safe because the spawned threads cannot actually surpass the lifetime of the main function,
-  // so this reference is aways valid
+  // SAFETY: The spawned threads cannot exceed the lifetime of the main thread, because they always
+  // terminate before the main function, because they are always `.join()`-ed before this function
+  // returns. Therefore, it is safe for the spawned threads to reference this function as if it had
+  // a 'static lifetime.
+  //
+  // TODO: Use scoped threads instead.
   let input = unsafe { std::mem::transmute::<_, &'static Path>(args.input.path.as_path()) };
+
+  let temp_dir = args
+    .temp_dir
+    .unwrap_or_else(|| av1an_core::hash_path(input));
+
+  let encode_dir = temp_dir.join("encode");
+  let splits_dir = temp_dir.join("split");
+
+  let _ = fs::create_dir(&temp_dir);
+  let _ = fs::create_dir(&encode_dir);
+  let _ = fs::create_dir(&splits_dir);
+
+  let vsinput = av1an_core::vapoursynth::create_vapoursynth_source_script(
+    &splits_dir,
+    input,
+    args.chunk_method,
+  )?;
+  let vsinput = unsafe { std::mem::transmute::<_, &'static Path>(vsinput.as_path()) };
 
   pretty_env_logger::init_custom_env("AV1AN_LOG");
 
@@ -315,205 +340,295 @@ pub fn main() -> anyhow::Result<()> {
     warn!("probing rate < 4 is currently experimental");
   }
 
-  let total_frames = av1an_core::vapoursynth::get_num_frames(input).unwrap() as u64;
+  let total_frames = av1an_core::vapoursynth::get_num_frames(&vsinput).unwrap() as u64;
 
-  BAR.set_length(total_frames);
-  BAR.set_style(
+  // TODO use formula instead
+  let total_frames_width = total_frames.to_string().len();
+
+  let bar = ProgressBar::new(total_frames);
+  let (sender, receiver) = mpsc::channel();
+
+  bar.set_style(
     ProgressStyle::default_bar()
-      .template("[{eta_precise}] {prefix:.bold}▕{bar:60.blue}▏{msg} ({pos}/{len}) {per_sec}")
-      .progress_chars("█▉▊▋▌▍▎▏  "),
+      .template(
+        format!(
+          "{{prefix:.bold}}▕{{bar:60.blue}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
+          total_frames_width
+        )
+        .as_str(),
+      )
+      .progress_chars(FINE_PROGRESS_CHARS),
   );
-  BAR.set_draw_target(ProgressDrawTarget::stdout());
-  BAR.set_prefix("Scene detection");
+  bar.set_prefix("Scene detection");
 
   let encode_start_time = Instant::now();
 
-  let scene_changes = scenedetect::get_scene_changes(
-    &args.input.path,
-    Some(Box::new(|frames, _| {
-      BAR.set_position(frames as u64);
-      BAR.set_message(format!("{:3}%", 100 * frames as u64 / BAR.length()));
-    })),
-  )?;
+  let scene_changes = thread::spawn(move || {
+    scenedetect::get_scene_changes(
+      &vsinput,
+      Some(Box::new(move |frames, _| {
+        sender.send(frames as u64).unwrap();
+      })),
+    )
+    .unwrap()
+  });
 
-  BAR.finish();
+  while let Ok(frames) = receiver.recv() {
+    bar.set_position(frames as u64);
+    let fps = frames as f64 / encode_start_time.elapsed().as_secs_f64();
+    bar.set_message(format!(
+      "{:3}%\t{:>6.2} fps",
+      100 * frames as u64 / total_frames,
+      fps
+    ));
+  }
 
-  let splits = create_video_queue_vs(&args.input.path, &scene_changes);
+  bar.finish();
+
+  let scene_changes = scene_changes.join().unwrap();
+  let splits = create_video_queue_vs(vsinput, &scene_changes);
   let splits =
     unsafe { std::mem::transmute::<_, &'static [(usize, (usize, usize))]>(splits.as_slice()) };
 
+  // Create a sender/receiver used for displaying the progress of the first and second pass
+  // to the terminal.
   let (tx, rx): (Sender<(usize, usize, u8)>, _) = mpsc::channel();
 
   rayon::ThreadPoolBuilder::new()
     .num_threads(8)
-    .build_global()
-    .unwrap();
+    .build_global()?;
 
-  // TODO fix threading
-  thread::spawn(move || {
+  let chunk_queue = thread::spawn(move || {
     splits
       .par_iter()
-      .for_each_with(tx, |tx, (chunk_num, (start, end))| {
-        let log = format!("fpf{}.log", chunk_num);
-        let mut first_pass = Command::new("aomenc")
-          .args(&[
-            "--passes=2",
-            "--pass=1",
-            "--threads=8",
-            "-b",
-            "10",
-            "--cpu-used=6",
-            "--end-usage=q",
-            "--cq-level=30",
-            "--tile-columns=2",
-            "--tile-rows=1",
-            format!("--fpf={}", log).as_str(),
-            "-o",
-            "/dev/null",
-            "-",
-          ])
-          .stdout(Stdio::piped())
-          .stderr(Stdio::piped())
-          .stdin(Stdio::piped())
-          .spawn()
-          .unwrap();
+      .for_each_with(tx, |tx, (chunk_index, (start, end))| {
+        let first_pass_stats_file = splits_dir.join(format!("fpf{}.log", chunk_index));
+        {
+          let mut first_pass = Command::new("aomenc")
+            .args(&[
+              "--passes=2",
+              "--pass=1",
+              "--threads=8",
+              "-b",
+              "10",
+              "--cpu-used=6",
+              "--end-usage=q",
+              "--cq-level=30",
+              "--tile-columns=2",
+              "--tile-rows=1",
+              format!(
+                "--fpf={}",
+                &first_pass_stats_file.as_os_str().to_string_lossy()
+              )
+              .as_str(),
+              "-o",
+              "/dev/null",
+              "-",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
 
-        let mut stdin = first_pass.stdin.take().unwrap();
-        let vspipe = thread::spawn(move || {
-          av1an_core::vapoursynth::run(input, *start, *end, &mut stdin).unwrap()
-        });
+          let mut stdin = first_pass.stdin.take().unwrap();
+          let vapoursynth_pipe = thread::spawn(move || {
+            av1an_core::vapoursynth::run(&vsinput, *start, *end, &mut stdin).unwrap()
+          });
 
-        let stderr = first_pass.stderr.take().unwrap();
-        let out = PipeStreamReader::new(Box::new(stderr));
+          let stderr = first_pass.stderr.take().unwrap();
+          let out = PipeStreamReader::new(Box::new(stderr));
 
-        for line in out.lines {
-          match line {
-            Ok(PipedLine::Line(s)) => {
-              if let Some(p) = s
-                .split_terminator('/')
-                .nth(1)
-                .and_then(|x| x.get(x.find("frame").unwrap() + "frame".len()..))
-                .and_then(|x| x.split_ascii_whitespace().next())
-                .and_then(|x| x.parse::<usize>().ok())
-              {
-                tx.send((p, *chunk_num, 1u8)).unwrap();
+          for line in out.lines {
+            match line {
+              Ok(PipedLine::Line(s)) => {
+                if let Some(frame) = av1an_core::encoder::extract_first_pass_frame(s.as_str()) {
+                  tx.send((frame, *chunk_index, 0u8)).unwrap();
+                }
               }
+              _ => break,
             }
-            _ => break,
           }
+
+          vapoursynth_pipe.join().unwrap();
+          first_pass.wait().unwrap();
         }
 
-        vspipe.join().unwrap();
-        first_pass.wait().unwrap();
+        {
+          while !first_pass_stats_file.exists() {
+            // Wait for first pass file to exist, because if the filesystem does
+            // not actually report that this file exists yet, the second pass
+            // will think that the first pass has not been completed and the
+            // process will terminate.
+            thread::sleep(std::time::Duration::from_millis(50));
+          }
 
-        let log_path = Path::new(log.as_str());
-        while !log_path.exists() {
-          // wait for first pass file to exist, because it's actually not guaranteed
-          // to exist even after waiting for the first pass thread to finish
-          // if it doesn't exist, the second pass crashes
-        }
+          let mut second_pass = Command::new("aomenc")
+            .args(&[
+              "--passes=2",
+              "--pass=2",
+              "--threads=8",
+              "-b",
+              "10",
+              "--cpu-used=6",
+              "--end-usage=q",
+              "--cq-level=30",
+              "--tile-columns=2",
+              "--tile-rows=1",
+              format!(
+                "--fpf={}",
+                &first_pass_stats_file.as_os_str().to_string_lossy()
+              )
+              .as_str(),
+              "-o",
+            ])
+            .arg(encode_dir.join(format!("{}.ivf", chunk_index)))
+            .arg("-")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
 
-        let mut second_pass = Command::new("aomenc")
-          .args(&[
-            "--passes=2",
-            "--pass=2",
-            "--threads=8",
-            "-b",
-            "10",
-            "--cpu-used=6",
-            "--end-usage=q",
-            "--cq-level=30",
-            "--tile-columns=2",
-            "--tile-rows=1",
-            format!("--fpf={}", log).as_str(),
-            "-o",
-            format!("{}.ivf", chunk_num).as_str(),
-            "-",
-          ])
-          .stdout(Stdio::piped())
-          .stderr(Stdio::piped())
-          .stdin(Stdio::piped())
-          .spawn()
-          .unwrap();
+          let mut stdin = second_pass.stdin.take().unwrap();
 
-        let mut stdin = second_pass.stdin.take().unwrap();
+          let vapoursynth_pipe = thread::spawn(move || {
+            av1an_core::vapoursynth::run(&vsinput, *start, *end, &mut stdin).unwrap()
+          });
 
-        let vspipe = thread::spawn(move || {
-          av1an_core::vapoursynth::run(input, *start, *end, &mut stdin).unwrap()
-        });
+          let stderr = second_pass.stderr.take().unwrap();
+          let out = PipeStreamReader::new(Box::new(stderr));
 
-        let stderr = second_pass.stderr.take().unwrap();
-        let out = PipeStreamReader::new(Box::new(stderr));
-
-        for line in out.lines {
-          match line {
-            Ok(PipedLine::Line(s)) => {
-              if let Some(p) = s
-                .split_terminator('/')
-                .nth(1)
-                .and_then(|x| x.get(x.find("frame").unwrap() + "frame".len()..))
-                .and_then(|x| x.split_ascii_whitespace().next())
-                .and_then(|x| x.parse::<usize>().ok())
-              {
-                tx.send((p, *chunk_num, 2u8)).unwrap();
+          for line in out.lines {
+            match line {
+              Ok(PipedLine::Line(s)) => {
+                if let Some(frame) = av1an_core::encoder::extract_second_pass_frame(s.as_str()) {
+                  tx.send((frame, *chunk_index, 1u8)).unwrap();
+                }
               }
+              _ => break,
             }
-            _ => break,
           }
-        }
 
-        vspipe.join().unwrap();
-        second_pass.wait().unwrap();
+          vapoursynth_pipe.join().unwrap();
+          second_pass.wait().unwrap();
+        }
       });
   });
 
-  let mut first_pass_progress: FnvHashMap<usize, usize> =
-    FnvHashMap::with_capacity_and_hasher(splits.len(), Default::default());
-  let mut second_pass_progress: FnvHashMap<usize, usize> =
-    FnvHashMap::with_capacity_and_hasher(splits.len(), Default::default());
+  // Since we need to keep track of the number of frames encoded for each chunk,
+  // and since each key (which are the chunk indices in this case) is guaranteed
+  // to only exist once, and that each key will always be used, we can use an
+  // array as a more efficient representation of a `HashMap`, where the index
+  // represents the index of the chunk, and the value at the index represents
+  // the number of frames encoded for that chunk.
+  let mut progress: [(Box<[usize]>, usize); 2] = [
+    // First pass progress information
+    (vec![0; splits.len()].into_boxed_slice(), 0),
+    // Second pass progress information
+    (vec![0; splits.len()].into_boxed_slice(), 0),
+  ];
 
-  let m = MultiProgress::new();
+  let progress_bars = MultiProgress::new();
 
-  let fp = m.add(ProgressBar::new(total_frames as u64));
-  fp.set_style(
+  let bars = [
+    progress_bars.add(ProgressBar::new(total_frames)),
+    progress_bars.add(ProgressBar::new(total_frames)),
+  ];
+
+  let mut frame_times: [CircularQueue<f64>; 2] = [
+    CircularQueue::with_capacity(240),
+    CircularQueue::with_capacity(240),
+  ];
+
+  bars[0].set_style(
     ProgressStyle::default_bar()
-      .template("[{eta_precise}] {prefix:.bold}▕{bar:60.green}▏{msg} ({pos}/{len}) {per_sec}")
-      .progress_chars("█▉▊▋▌▍▎▏  "),
+      .template(
+        format!(
+          "{{prefix:.bold}}▕{{bar:60.green}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
+          total_frames_width
+        )
+        .as_str(),
+      )
+      .progress_chars(FINE_PROGRESS_CHARS),
   );
-  fp.set_prefix("First pass     ");
+  bars[0].set_prefix("     First pass");
 
-  let sp = m.add(ProgressBar::new(total_frames as u64));
-  sp.set_style(
+  bars[1].set_style(
     ProgressStyle::default_bar()
-      .template("[{eta_precise}] {prefix:.bold}▕{bar:60.magenta}▏{msg} ({pos}/{len}) {per_sec}")
-      .progress_chars("█▉▊▋▌▍▎▏  "),
+      .template(
+        format!(
+          "{{prefix:.bold}}▕{{bar:60.magenta}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
+          total_frames_width
+        )
+        .as_str(),
+      )
+      .progress_chars(FINE_PROGRESS_CHARS),
   );
-  sp.set_prefix("Second pass    ");
+  bars[1].set_prefix("    Second pass");
 
-  while let Ok((frames, chunk_num, pass)) = rx.recv() {
-    if pass == 1 {
-      first_pass_progress.insert(chunk_num, frames);
-      let position = first_pass_progress
-        .iter()
-        .map(|(_, frames)| *frames)
-        .sum::<usize>() as u64;
-      fp.set_position(position);
-      fp.set_message(format!("{:3}%", 100 * position / total_frames));
-    } else {
-      second_pass_progress.insert(chunk_num, frames);
-      let position = second_pass_progress
-        .iter()
-        .map(|(_, frames)| *frames)
-        .sum::<usize>() as u64;
-      sp.set_position(position);
-      sp.set_message(format!("{:3}%", 100 * position / total_frames));
+  for bar in &bars {
+    bar.set_position(0);
+    bar.set_message("  0%\t  0.00 fps");
+  }
+
+  let mut timers: [Instant; 2] = [Instant::now(); 2];
+
+  while let Ok((frames, chunk_index, pass)) = rx.recv() {
+    // We can continuously sum up the total number of frames encoded instead of recalculating
+    // the sum of the encoded frames per chunk every time this loop body is entered, which
+    // saves a few CPU cycles.
+    unsafe {
+      // SAFETY: `pass` will always be 0 or 1, so it can never be out of bounds since
+      // `progress` will always have 2 elements.
+      let (progress, sum) = progress.get_unchecked_mut(pass as usize);
+
+      // SAFETY: `chunk_index` will always be in range of `progress`, because the initialization
+      // of progress and the value of `chunk_index` are both based on the length of the splits.
+      //
+      // However, this calculation can cause integer overflow if `frames < progress[chunk_index]`.
+      // This should not be possible, however.
+
+      // how many frames were newly encoded
+      let diff = frames - progress.get_unchecked(chunk_index);
+      *sum += diff;
+
+      // SAFETY: Indexing by `chunk_index` is safe for the same reasons explained above.
+      *progress.get_unchecked_mut(chunk_index) = frames;
+
+      let new_instant = Instant::now();
+      frame_times
+        .get_unchecked_mut(pass as usize)
+        .push((new_instant - *timers.get_unchecked(pass as usize)).as_secs_f64());
+      *timers.get_unchecked_mut(pass as usize) = new_instant;
+
+      if diff > 0 {
+        let fps = frame_times.get_unchecked(pass as usize).len() as f64
+          / frame_times
+            .get_unchecked(pass as usize)
+            .iter()
+            // Force LLVM to unroll the loop, equivalent to -Ofast
+            .fold(0f64, |sum, val| std::intrinsics::fadd_fast(sum, *val));
+
+        bars.get_unchecked(pass as usize).set_position(*sum as u64);
+        bars.get_unchecked(pass as usize).set_message(format!(
+          "{:3}%\t{:>6.2} fps",
+          100 * *sum as u64 / total_frames,
+          fps
+        ));
+      }
     }
   }
 
-  fp.finish();
-  sp.finish();
+  chunk_queue.join().unwrap();
 
-  println!("Took {:?}", encode_start_time.elapsed());
+  for bar in &bars {
+    bar.finish();
+  }
+
+  // println!("Concatenating...");
+
+  println!("Took {:.2?}", encode_start_time.elapsed());
 
   Ok(())
 }

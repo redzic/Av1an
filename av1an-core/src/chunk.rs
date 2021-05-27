@@ -1,21 +1,8 @@
+use std::cmp::Reverse;
 use std::iter;
 use std::path::Path;
-use std::{cmp::Reverse, ops::Deref};
 
-use crate::{chunk, vapoursynth};
-
-pub fn create_vs_chunk(
-  temp: &Path,
-  vs_script: &Path,
-  index: usize,
-  frame_start: usize,
-  mut frame_end: usize,
-) {
-  assert!(frame_end > frame_start);
-
-  let frames = frame_end - frame_start;
-  frame_end -= 1;
-}
+use crate::vapoursynth;
 
 #[must_use]
 pub fn create_video_queue_vs(

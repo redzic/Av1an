@@ -30,12 +30,7 @@ pub fn segment(input: &Path, temp: &Path, segments: Vec<usize>) {
       .collect::<Vec<String>>();
     let segments_joined = segments_to_string.join(",");
 
-    cmd.args(&[
-      "-f",
-      "segment",
-      "-segment_frames",
-      &segments_joined.to_owned(),
-    ]);
+    cmd.args(&["-f", "segment", "-segment_frames", &segments_joined]);
     let split_path = Path::new(temp).join("split").join("%05d.mkv");
     let split_str = split_path.to_str().unwrap();
     cmd.arg(split_str);

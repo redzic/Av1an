@@ -1,6 +1,4 @@
-use av_scenechange::{
-  detect_scene_changes, new_detector, DetectionOptions, DetectionResults, ProgressCallback,
-};
+use av_scenechange::{detect_scene_changes, DetectionOptions};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -12,7 +10,7 @@ pub fn get_scene_changes(
   callback: Option<Box<dyn Fn(usize, usize)>>,
 ) -> anyhow::Result<Vec<usize>> {
   Ok(
-    detect_scene_changes::<_, u16>(
+    detect_scene_changes::<_, u8>(
       &mut y4m::Decoder::new(
         Command::new("vspipe")
           .arg("-y")
@@ -20,8 +18,7 @@ pub fn get_scene_changes(
           .arg("-")
           .stdout(Stdio::piped())
           .stderr(Stdio::null())
-          .spawn()
-          .unwrap()
+          .spawn()?
           .stdout
           .unwrap(),
       )?,
@@ -29,8 +26,8 @@ pub fn get_scene_changes(
         fast_analysis: true,
         ignore_flashes: true,
         lookahead_distance: 5,
-        max_scenecut_distance: None,
-        min_scenecut_distance: None,
+        max_scenecut_distance: Some(240),
+        min_scenecut_distance: Some(48),
       },
       callback,
     )

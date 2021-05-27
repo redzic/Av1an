@@ -172,7 +172,8 @@ fn extra_splits(split_locations: Vec<usize>, total_frames: usize, split_size: us
 fn segment(input: String, temp: String, segments: Vec<usize>) -> PyResult<()> {
   let input = Path::new(&input);
   let temp = Path::new(&temp);
-  Ok(av1an_core::split::segment(input, temp, segments))
+  av1an_core::split::segment(input, temp, segments);
+  Ok(())
 }
 
 #[pymodule]

@@ -1,14 +1,11 @@
-// This is a mostly drop-in reimplementation of vspipe.
-// The main difference is what the errors look like.
-
 // TODO switch error handling crate, failure is deprecated
 use failure::{Error, ResultExt};
 
-// Modified from vspipe example in vapoursynth crate
-// https://github.com/YaLTeR/vapoursynth-rs/blob/master/vapoursynth/examples/vspipe.rs
 extern crate num_rational;
 extern crate vapoursynth;
 
+use anyhow::anyhow;
+use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
@@ -69,8 +66,6 @@ fn print_y4m_header<W: Write>(writer: &mut W, node: &Node) -> Result<(), Error> 
 
     if let Property::Constant(resolution) = info.resolution {
       write!(writer, " W{} H{}", resolution.width, resolution.height)?;
-    } else {
-      unreachable!();
     }
 
     if let Property::Constant(framerate) = info.framerate {
@@ -79,8 +74,6 @@ fn print_y4m_header<W: Write>(writer: &mut W, node: &Node) -> Result<(), Error> 
         " F{}:{}",
         framerate.numerator, framerate.denominator
       )?;
-    } else {
-      unreachable!();
     }
 
     #[cfg(feature = "gte-vapoursynth-api-32")]
@@ -282,4 +275,83 @@ pub fn get_num_frames(path: &Path) -> Result<usize, Error> {
   };
 
   Ok(num_frames)
+}
+
+/// Creates vs pipe file
+pub fn create_vapoursynth_source_script(
+  temp: &Path,
+  source: &Path,
+  chunk_method: ChunkMethod,
+) -> anyhow::Result<PathBuf> {
+  let source = Path::new(source).canonicalize()?;
+  let load_script_path = temp.join("loadscript.vpy");
+
+  let mut load_script = File::create(&load_script_path)?;
+
+  let cache_file = std::env::current_dir()?.join(temp.join(format!(
+    "cache.{}",
+    match chunk_method {
+      ChunkMethod::FFMS2 => "ffindex",
+      ChunkMethod::LSMASH => "lwi",
+      _ => return Err(anyhow!("Cannot create vapoursynth script for chunk method")),
+    }
+  )));
+
+  load_script.write_all(
+    // TODO should probably check if the syntax for rust strings and escaping utf and stuff like that is the same as in python
+    format!(
+      "from vapoursynth import core\n\
+core.{}({:?}, cachefile={:?}).set_output()",
+      match chunk_method {
+        ChunkMethod::FFMS2 => "ffms2.Source",
+        ChunkMethod::LSMASH => "lsmas.LWLibavSource",
+        _ => unreachable!(),
+      },
+      source,
+      cache_file
+    )
+    .as_bytes(),
+  )?;
+
+  Ok(load_script_path)
+}
+
+/// Creates vs pipe file
+pub fn create_vapoursynth_scenedetect_script(
+  temp: &Path,
+  source: &Path,
+  chunk_method: ChunkMethod,
+) -> anyhow::Result<PathBuf> {
+  let source = Path::new(source).canonicalize()?;
+  let load_script_path = temp.join("loadscript.vpy");
+
+  let mut load_script = File::create(&load_script_path)?;
+
+  let cache_file = std::env::current_dir()?.join(temp.join(format!(
+    "cache_scenedetect.{}",
+    match chunk_method {
+      ChunkMethod::FFMS2 => "ffindex",
+      ChunkMethod::LSMASH => "lwi",
+      _ => return Err(anyhow!("Cannot create vapoursynth script for chunk method")),
+    }
+  )));
+
+  load_script.write_all(
+    // TODO only scale by a factor of 2, so that it works better for different resolutions and aspect ratios
+    format!(
+      "import vapoursynth\n\
+core = vapoursynth.get_core()
+core.resize.Bilinear(core.{}({:?}, cachefile={:?}), width=640, height=360, format=vapoursynth.YUV420P8).set_output()",
+      match chunk_method {
+        ChunkMethod::FFMS2 => "ffms2.Source",
+        ChunkMethod::LSMASH => "lsmas.LWLibavSource",
+        _ => unreachable!(),
+      },
+      source,
+      cache_file
+    )
+    .as_bytes(),
+  )?;
+
+  Ok(load_script_path)
 }
