@@ -4,11 +4,11 @@ use clap::AppSettings::ColoredHelp;
 use clap::Clap;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::Confirm;
+use fnv::FnvHashMap;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use log::{error, info, warn};
 use rayon::prelude::*;
 use static_init::dynamic;
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -339,7 +339,8 @@ pub fn main() -> anyhow::Result<()> {
   BAR.finish();
 
   let splits = create_video_queue_vs(&args.input.path, &scene_changes);
-  let splits = unsafe { std::mem::transmute::<_, &'static [_]>(splits.as_slice()) };
+  let splits =
+    unsafe { std::mem::transmute::<_, &'static [(usize, (usize, usize))]>(splits.as_slice()) };
 
   let (tx, rx): (Sender<(usize, usize, u8)>, _) = mpsc::channel();
 
@@ -352,7 +353,6 @@ pub fn main() -> anyhow::Result<()> {
   thread::spawn(move || {
     splits
       .par_iter()
-      // .for_each_with(tx, |tx, (start, end, chunk_num): &(usize, usize, usize)| {
       .for_each_with(tx, |tx, (chunk_num, (start, end))| {
         let log = format!("fpf{}.log", chunk_num);
         let mut first_pass = Command::new("aomenc")
@@ -467,15 +467,17 @@ pub fn main() -> anyhow::Result<()> {
       });
   });
 
-  let mut first_pass_progress: HashMap<usize, usize> = HashMap::new();
-  let mut second_pass_progress: HashMap<usize, usize> = HashMap::new();
+  let mut first_pass_progress: FnvHashMap<usize, usize> =
+    FnvHashMap::with_capacity_and_hasher(splits.len(), Default::default());
+  let mut second_pass_progress: FnvHashMap<usize, usize> =
+    FnvHashMap::with_capacity_and_hasher(splits.len(), Default::default());
 
   let m = MultiProgress::new();
 
   let fp = m.add(ProgressBar::new(total_frames as u64));
   fp.set_style(
     ProgressStyle::default_bar()
-      .template("[{eta_precise}] {prefix:.bold}▕{bar:60.red}▏{msg} ({pos}/{len}) {per_sec}")
+      .template("[{eta_precise}] {prefix:.bold}▕{bar:60.green}▏{msg} ({pos}/{len}) {per_sec}")
       .progress_chars("█▉▊▋▌▍▎▏  "),
   );
   fp.set_prefix("First pass     ");
