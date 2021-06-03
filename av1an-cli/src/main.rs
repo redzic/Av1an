@@ -2,15 +2,15 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::string::FromUtf8Error;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
 
 use av1an_core::chunk::create_video_queue_vs;
+use av1an_core::encoder::generic::EncodeChunk;
+use av1an_core::encoder::{self, Chunk, TwoPassProgress};
 use av1an_core::{scenedetect, ChunkMethod, ConcatMethod, Encoder, SplitMethod};
 
 use clap::AppSettings::ColoredHelp;
@@ -18,13 +18,14 @@ use clap::Clap;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::Confirm;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use serde::{Deserialize, Serialize};
 
 use circular_queue::CircularQueue;
-use log::{error, info, warn};
+use log::error;
 use rayon::prelude::*;
 use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum InputType {
   /// Vapoursynth (.vpy, .py) input source
   Vapoursynth,
@@ -32,7 +33,7 @@ pub enum InputType {
   Video,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Input {
   path: PathBuf,
   r#type: InputType,
@@ -56,7 +57,7 @@ impl From<&OsStr> for Input {
 }
 
 /// Cross-platform command-line AV1 / VP9 / HEVC / H264 / VVC encoding framework with per scene quality encoding
-#[derive(Clap, Debug)]
+#[derive(Clap, Debug, Serialize, Deserialize)]
 #[clap(name = "av1an", setting = ColoredHelp, version)]
 pub struct Args {
   /// Input file or vapoursynth (.py, .vpy) script
@@ -100,7 +101,7 @@ pub struct Args {
   webm: bool,
 
   /// Method for creating chunks
-  #[clap(short = 'm', long, default_value = "hybrid")]
+  #[clap(short = 'm', long, default_value="ffms2", possible_values=&["select", "ffms2", "lsmash", "hybrid"])]
   chunk_method: ChunkMethod,
 
   /// File location for scenes
@@ -229,65 +230,6 @@ pub fn validate_args(args: &Args) -> Result<(), CliError> {
   Ok(())
 }
 
-#[derive(Debug)]
-enum PipeError {
-  IO(io::Error),
-  NotUtf8(FromUtf8Error),
-}
-
-#[derive(Debug)]
-enum PipedLine {
-  Line(String),
-  Eof,
-}
-
-// Reads data from the pipe byte-by-byte and returns the lines.
-// Useful for processing the pipe's output as soon as it becomes available.
-struct PipeStreamReader {
-  lines: Receiver<Result<PipedLine, PipeError>>,
-}
-
-impl PipeStreamReader {
-  // Starts a background task reading bytes from the pipe.
-  fn new(mut stream: Box<dyn io::Read + Send>) -> PipeStreamReader {
-    PipeStreamReader {
-      lines: {
-        let (tx, rx) = mpsc::channel();
-
-        thread::spawn(move || {
-          let mut buf = Vec::new();
-          let mut byte = [0u8];
-          loop {
-            match stream.read(&mut byte) {
-              Ok(0) => {
-                let _ = tx.send(Ok(PipedLine::Eof));
-                break;
-              }
-              Ok(_) => {
-                if byte[0] == b'\r' {
-                  tx.send(match String::from_utf8(buf.clone()) {
-                    Ok(line) => Ok(PipedLine::Line(line)),
-                    Err(err) => Err(PipeError::NotUtf8(err)),
-                  })
-                  .unwrap();
-                  buf.clear()
-                } else {
-                  buf.push(byte[0])
-                }
-              }
-              Err(error) => {
-                tx.send(Err(PipeError::IO(error))).unwrap();
-              }
-            }
-          }
-        });
-
-        rx
-      },
-    }
-  }
-}
-
 /// Unicode characters used to create a "finer" or smoother-looking progress bar.
 const FINE_PROGRESS_CHARS: &str = "█▉▊▋▌▍▎▏  ";
 
@@ -295,6 +237,10 @@ pub fn main() -> anyhow::Result<()> {
   let args: Args = Args::parse();
 
   validate_args(&args)?;
+
+  println!("{}", serde_json::to_string_pretty(&args).unwrap());
+
+  return Ok(());
 
   // SAFETY: The spawned threads cannot exceed the lifetime of the main thread, because they always
   // terminate before the main function, because they are always `.join()`-ed before this function
@@ -329,15 +275,15 @@ pub fn main() -> anyhow::Result<()> {
       .with_prompt(format!("Output file {:?} exists. Overwrite?", &args.output))
       .interact()?
     {
-      info!("Overwriting output");
+      println!("Overwriting output");
     } else {
-      error!("Output file already exists");
+      println!("Output file already exists");
       return Ok(());
     }
   }
 
   if args.probing_rate < 4 {
-    warn!("probing rate < 4 is currently experimental");
+    println!("probing rate < 4 is currently experimental");
   }
 
   let total_frames = av1an_core::vapoursynth::get_num_frames(&vsinput).unwrap() as u64;
@@ -387,244 +333,147 @@ pub fn main() -> anyhow::Result<()> {
 
   let scene_changes = scene_changes.join().unwrap();
   let splits = create_video_queue_vs(vsinput, &scene_changes);
-  let splits =
-    unsafe { std::mem::transmute::<_, &'static [(usize, (usize, usize))]>(splits.as_slice()) };
+  let splits = unsafe { std::mem::transmute::<_, &'static [Chunk]>(splits.as_slice()) };
 
-  // Create a sender/receiver used for displaying the progress of the first and second pass
-  // to the terminal.
-  let (tx, rx): (Sender<(usize, usize, u8)>, _) = mpsc::channel();
-
+  // The CLI handles the configuration of rayon
   rayon::ThreadPoolBuilder::new()
     .num_threads(8)
     .build_global()?;
 
-  let chunk_queue = thread::spawn(move || {
-    splits
-      .par_iter()
-      .for_each_with(tx, |tx, (chunk_index, (start, end))| {
-        let first_pass_stats_file = splits_dir.join(format!("fpf{}.log", chunk_index));
-        {
-          let mut first_pass = Command::new("aomenc")
-            .args(&[
-              "--passes=2",
-              "--pass=1",
-              "--threads=8",
-              "-b",
-              "10",
-              "--cpu-used=6",
-              "--end-usage=q",
-              "--cq-level=30",
-              "--tile-columns=2",
-              "--tile-rows=1",
-              format!(
-                "--fpf={}",
-                &first_pass_stats_file.as_os_str().to_string_lossy()
-              )
-              .as_str(),
-              "-o",
-              "/dev/null",
-              "-",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::piped())
-            .spawn()
-            .unwrap();
+  let (tx, rx): (Sender<TwoPassProgress>, _) = mpsc::channel();
 
-          let mut stdin = first_pass.stdin.take().unwrap();
-          let vapoursynth_pipe = thread::spawn(move || {
-            av1an_core::vapoursynth::run(&vsinput, *start, *end, &mut stdin).unwrap()
-          });
+  let mut aomenc = encoder::aom::Aom::new(
+    240,
+    splits.len(),
+    tx,
+    &["--cpu-used=6", "--cq-level=30", "--end-usage=q"],
+  );
 
-          let stderr = first_pass.stderr.take().unwrap();
-          let out = PipeStreamReader::new(Box::new(stderr));
-
-          for line in out.lines {
-            match line {
-              Ok(PipedLine::Line(s)) => {
-                if let Some(frame) = av1an_core::encoder::extract_first_pass_frame(s.as_str()) {
-                  tx.send((frame, *chunk_index, 0u8)).unwrap();
-                }
-              }
-              _ => break,
-            }
-          }
-
-          vapoursynth_pipe.join().unwrap();
-          first_pass.wait().unwrap();
-        }
-
-        {
-          while !first_pass_stats_file.exists() {
-            // Wait for first pass file to exist, because if the filesystem does
-            // not actually report that this file exists yet, the second pass
-            // will think that the first pass has not been completed and the
-            // process will terminate.
-            thread::sleep(std::time::Duration::from_millis(50));
-          }
-
-          let mut second_pass = Command::new("aomenc")
-            .args(&[
-              "--passes=2",
-              "--pass=2",
-              "--threads=8",
-              "-b",
-              "10",
-              "--cpu-used=6",
-              "--end-usage=q",
-              "--cq-level=30",
-              "--tile-columns=2",
-              "--tile-rows=1",
-              format!(
-                "--fpf={}",
-                &first_pass_stats_file.as_os_str().to_string_lossy()
-              )
-              .as_str(),
-              "-o",
-            ])
-            .arg(encode_dir.join(format!("{}.ivf", chunk_index)))
-            .arg("-")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::piped())
-            .spawn()
-            .unwrap();
-
-          let mut stdin = second_pass.stdin.take().unwrap();
-
-          let vapoursynth_pipe = thread::spawn(move || {
-            av1an_core::vapoursynth::run(&vsinput, *start, *end, &mut stdin).unwrap()
-          });
-
-          let stderr = second_pass.stderr.take().unwrap();
-          let out = PipeStreamReader::new(Box::new(stderr));
-
-          for line in out.lines {
-            match line {
-              Ok(PipedLine::Line(s)) => {
-                if let Some(frame) = av1an_core::encoder::extract_second_pass_frame(s.as_str()) {
-                  tx.send((frame, *chunk_index, 1u8)).unwrap();
-                }
-              }
-              _ => break,
-            }
-          }
-
-          vapoursynth_pipe.join().unwrap();
-          second_pass.wait().unwrap();
-        }
-      });
+  let t = thread::spawn(move || {
+    aomenc.0.encode_chunk(
+      (Path::new("fpf0.log"), Path::new("out.ivf")),
+      av1an_core::vapoursynth::pipe,
+      Chunk {
+        index: 0,
+        start: 0,
+        end: 50,
+      },
+    );
   });
 
-  // Since we need to keep track of the number of frames encoded for each chunk,
-  // and since each key (which are the chunk indices in this case) is guaranteed
-  // to only exist once, and that each key will always be used, we can use an
-  // array as a more efficient representation of a `HashMap`, where the index
-  // represents the index of the chunk, and the value at the index represents
-  // the number of frames encoded for that chunk.
-  let mut progress: [(Box<[usize]>, usize); 2] = [
-    // First pass progress information
-    (vec![0; splits.len()].into_boxed_slice(), 0),
-    // Second pass progress information
-    (vec![0; splits.len()].into_boxed_slice(), 0),
-  ];
+  // let mut progress: [(Box<[usize]>, usize); 2] = [
+  //   // First pass progress information
+  //   (vec![0; splits.len()].into_boxed_slice(), 0),
+  //   // Second pass progress information
+  //   (vec![0; splits.len()].into_boxed_slice(), 0),
+  // ];
 
-  let progress_bars = MultiProgress::new();
+  // let progress_bars = MultiProgress::new();
 
-  let bars = [
-    progress_bars.add(ProgressBar::new(total_frames)),
-    progress_bars.add(ProgressBar::new(total_frames)),
-  ];
+  // let bars = [
+  //   progress_bars.add(ProgressBar::new(total_frames)),
+  //   progress_bars.add(ProgressBar::new(total_frames)),
+  // ];
 
-  let mut frame_times: [CircularQueue<f64>; 2] = [
-    CircularQueue::with_capacity(240),
-    CircularQueue::with_capacity(240),
-  ];
+  // bars[0].set_style(
+  //   ProgressStyle::default_bar()
+  //     .template(
+  //       format!(
+  //         "{{prefix:.bold}}▕{{bar:60.green}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
+  //         total_frames_width
+  //       )
+  //       .as_str(),
+  //     )
+  //     .progress_chars(FINE_PROGRESS_CHARS),
+  // );
+  // bars[0].set_prefix("     First pass");
 
-  bars[0].set_style(
-    ProgressStyle::default_bar()
-      .template(
-        format!(
-          "{{prefix:.bold}}▕{{bar:60.green}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
-          total_frames_width
-        )
-        .as_str(),
-      )
-      .progress_chars(FINE_PROGRESS_CHARS),
-  );
-  bars[0].set_prefix("     First pass");
+  // bars[1].set_style(
+  //   ProgressStyle::default_bar()
+  //     .template(
+  //       format!(
+  //         "{{prefix:.bold}}▕{{bar:60.magenta}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
+  //         total_frames_width
+  //       )
+  //       .as_str(),
+  //     )
+  //     .progress_chars(FINE_PROGRESS_CHARS),
+  // );
+  // bars[1].set_prefix("    Second pass");
 
-  bars[1].set_style(
-    ProgressStyle::default_bar()
-      .template(
-        format!(
-          "{{prefix:.bold}}▕{{bar:60.magenta}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
-          total_frames_width
-        )
-        .as_str(),
-      )
-      .progress_chars(FINE_PROGRESS_CHARS),
-  );
-  bars[1].set_prefix("    Second pass");
+  // for bar in &bars {
+  //   bar.set_position(0);
+  //   bar.set_message("  0%\t  0.00 fps");
+  // }
 
-  for bar in &bars {
-    bar.set_position(0);
-    bar.set_message("  0%\t  0.00 fps");
+  // let mut timers: [Instant; 2] = [Instant::now(); 2];
+
+  while let Ok(progress) = rx.recv() {
+    dbg!(progress);
   }
 
-  let mut timers: [Instant; 2] = [Instant::now(); 2];
+  t.join().unwrap();
 
-  while let Ok((frames, chunk_index, pass)) = rx.recv() {
-    // We can continuously sum up the total number of frames encoded instead of recalculating
-    // the sum of the encoded frames per chunk every time this loop body is entered, which
-    // saves a few CPU cycles.
-    unsafe {
-      // SAFETY: `pass` will always be 0 or 1, so it can never be out of bounds since
-      // `progress` will always have 2 elements.
-      let (progress, sum) = progress.get_unchecked_mut(pass as usize);
+  // while let Ok(p) = rx.recv() {
+  //   let (frames, chunk_index, pass) = match p {
+  //     TwoPassProgress::FirstPass(p) => (p.frames_encoded, p.chunk_index, 0),
+  //     TwoPassProgress::SecondPass(p) => (p.frames_encoded, p.chunk_index, 1),
+  //   };
 
-      // SAFETY: `chunk_index` will always be in range of `progress`, because the initialization
-      // of progress and the value of `chunk_index` are both based on the length of the splits.
-      //
-      // However, this calculation can cause integer overflow if `frames < progress[chunk_index]`.
-      // This should not be possible, however.
+  //   // We can continuously sum up the total number of frames encoded instead of recalculating
+  //   // the sum of the encoded frames per chunk every time this loop body is entered, which
+  //   // saves a few CPU cycles.
+  //   unsafe {
+  //     // SAFETY: `pass` will always be 0 or 1, so it can never be out of bounds since
+  //     // `progress` will always have 2 elements.
+  //     let (progress, sum) = progress.get_unchecked_mut(pass);
 
-      // how many frames were newly encoded
-      let diff = frames - progress.get_unchecked(chunk_index);
-      *sum += diff;
+  //     // SAFETY: `chunk_index` will always be in range of `progress`, because the initialization
+  //     // of progress and the value of `chunk_index` are both based on the length of the splits.
+  //     //
+  //     // However, this calculation can cause integer overflow if `frames < progress[chunk_index]`.
+  //     // This should not be possible, however.
 
-      // SAFETY: Indexing by `chunk_index` is safe for the same reasons explained above.
-      *progress.get_unchecked_mut(chunk_index) = frames;
+  //     // how many frames were newly encoded
+  //     let diff = frames - progress.get_unchecked(chunk_index);
+  //     *sum += diff;
 
-      let new_instant = Instant::now();
-      frame_times
-        .get_unchecked_mut(pass as usize)
-        .push((new_instant - *timers.get_unchecked(pass as usize)).as_secs_f64());
-      *timers.get_unchecked_mut(pass as usize) = new_instant;
+  //     // SAFETY: Indexing by `chunk_index` is safe for the same reasons explained above.
+  //     *progress.get_unchecked_mut(chunk_index) = frames;
 
-      if diff > 0 {
-        let fps = frame_times.get_unchecked(pass as usize).len() as f64
-          / frame_times
-            .get_unchecked(pass as usize)
-            .iter()
-            // Force LLVM to unroll the loop, equivalent to -Ofast
-            .fold(0f64, |sum, val| std::intrinsics::fadd_fast(sum, *val));
+  //     let new_instant = Instant::now();
+  //     frame_times
+  //       .get_unchecked_mut(pass)
+  //       .push((new_instant - *timers.get_unchecked(pass)).as_secs_f32());
+  //     *timers.get_unchecked_mut(pass) = new_instant;
 
-        bars.get_unchecked(pass as usize).set_position(*sum as u64);
-        bars.get_unchecked(pass as usize).set_message(format!(
-          "{:3}%\t{:>6.2} fps",
-          100 * *sum as u64 / total_frames,
-          fps
-        ));
-      }
-    }
-  }
+  //     if diff > 0 {
+  //       let fps = frame_times.get_unchecked(pass).len() as f32
+  //         / frame_times
+  //           .get_unchecked(pass)
+  //           .iter()
+  //           // Allow LLVM to unroll the loop. This is equivalent to using -Ofast because
+  //           // it allows the compiler to accumulate the sum in multiple registers depending
+  //           // on the CPU architecture, which changes the semantics of the additions for
+  //           // floating point numbers, but in this case it doesn't matter since we are only
+  //           // using 2 decimal places anyway, and great precision is not required.
+  //           .fold(0f32, |sum, val| std::intrinsics::fadd_fast(sum, *val));
 
-  chunk_queue.join().unwrap();
+  //       bars.get_unchecked(pass).set_position(*sum as u64);
+  //       bars.get_unchecked(pass).set_message(format!(
+  //         "{:3}%\t{:>6.2} fps",
+  //         100 * *sum as u64 / total_frames,
+  //         fps
+  //       ));
+  //     }
+  //   }
+  // }
 
-  for bar in &bars {
-    bar.finish();
-  }
+  // chunk_queue.join().unwrap();
+
+  // for bar in &bars {
+  //   bar.finish();
+  // }
 
   // println!("Concatenating...");
 

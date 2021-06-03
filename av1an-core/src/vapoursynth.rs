@@ -145,7 +145,7 @@ fn output<W: Write + Send + Sync>(
 }
 
 // TODO try to eliminate code duplication
-pub fn run<W: Write + Send + Sync>(
+pub fn pipe<W: Write + Send + Sync>(
   input: &Path,
   start_frame: usize,
   end_frame: usize,

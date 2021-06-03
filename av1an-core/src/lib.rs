@@ -1,18 +1,17 @@
+#![feature(trait_alias)]
+
 #[macro_use]
 extern crate log;
-extern crate av_format;
-extern crate av_ivf;
-extern crate failure;
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::str::FromStr;
-use sysinfo::SystemExt;
-use thiserror::Error;
 
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+
+use strum_macros::EnumString;
 
 pub mod chunk;
 pub mod concat;
@@ -24,123 +23,49 @@ pub mod target_quality;
 pub mod vapoursynth;
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Serialize, Deserialize)]
 pub enum Encoder {
   aom,
   rav1e,
   libvpx,
+  #[strum(serialize = "svt-av1")]
   svt_av1,
+  #[strum(serialize = "svt-vp9")]
   svt_vp9,
   x264,
   x265,
 }
 
-#[derive(Debug, Error)]
-pub enum EncoderParseError {
-  #[error("Invalid or unknown encoder")]
-  InvalidEncoder,
-}
-
-impl FromStr for Encoder {
-  type Err = EncoderParseError;
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    // set to match usage in python code
-    match s {
-      "aom" => Ok(Self::aom),
-      "rav1e" => Ok(Self::rav1e),
-      "vpx" => Ok(Self::libvpx),
-      "svt-av1" => Ok(Self::svt_av1),
-      "svt-vp9" => Ok(Self::svt_vp9),
-      "x264" => Ok(Self::x264),
-      "x265" => Ok(Self::x265),
-      _ => Err(EncoderParseError::InvalidEncoder),
-    }
-  }
-}
-
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, EnumString, Serialize, Deserialize)]
 pub enum ConcatMethod {
   /// MKVToolNix
+  #[strum(serialize = "mkvmerge")]
   MKVMerge,
   /// FFmpeg
+  #[strum(serialize = "ffmpeg")]
   FFmpeg,
   /// Concatenate to ivf
+  #[strum(serialize = "ivf")]
   Ivf,
 }
 
-#[derive(Debug, Error)]
-pub enum ConcatMethodParseError {
-  #[error("Invalid concatenation method")]
-  InvalidMethod,
-}
-
-impl FromStr for ConcatMethod {
-  type Err = ConcatMethodParseError;
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    match s {
-      "ffmpeg" => Ok(Self::FFmpeg),
-      "mkvmerge" => Ok(Self::MKVMerge),
-      "ivf" => Ok(Self::Ivf),
-      _ => Err(ConcatMethodParseError::InvalidMethod),
-    }
-  }
-}
-
-#[derive(Debug)]
+#[derive(Debug, EnumString, Serialize, Deserialize)]
 pub enum SplitMethod {
   PySceneDetect,
   AOMKeyframes,
   FFmpeg,
 }
 
-#[derive(Debug, Error)]
-pub enum SplitMethodParseError {
-  #[error("Invalid split method")]
-  InvalidMethod,
-}
-
-impl FromStr for SplitMethod {
-  type Err = SplitMethodParseError;
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    match s {
-      "ffmpeg" => Ok(Self::FFmpeg),
-      "pyscene" => Ok(Self::PySceneDetect),
-      "aom_keyframes" => Ok(Self::AOMKeyframes),
-      _ => Err(SplitMethodParseError::InvalidMethod),
-    }
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Serialize, Deserialize)]
 pub enum ChunkMethod {
+  #[strum(serialize = "select")]
   Select,
+  #[strum(serialize = "ffms2")]
   FFMS2,
+  #[strum(serialize = "lsmash")]
   LSMASH,
+  #[strum(serialize = "hybrid")]
   Hybrid,
-}
-
-#[derive(Debug, Error)]
-pub enum ChunkMethodParseError {
-  #[error("Invalid chunk method")]
-  InvalidMethod,
-}
-
-impl FromStr for ChunkMethod {
-  type Err = ChunkMethodParseError;
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    // set to match usage in python code
-    match s {
-      "vs_ffms2" => Ok(Self::FFMS2),
-      "vs_lsmash" => Ok(Self::LSMASH),
-      "hybrid" => Ok(Self::Hybrid),
-      "select" => Ok(Self::Select),
-      _ => Err(ChunkMethodParseError::InvalidMethod),
-    }
-  }
 }
 
 pub fn hash_path(path: &Path) -> PathBuf {
@@ -165,22 +90,18 @@ pub fn adapt_probing_rate(rate: usize) -> usize {
 
 /// Determine the optimal number of workers for an encoder
 pub fn determine_workers(encoder: Encoder) -> u64 {
-  // TODO look for lighter weight solution? sys-info maybe?
-  let mut system = sysinfo::System::new();
-  system.refresh_memory();
-
-  let cpu = num_cpus::get() as u64;
-  // get_total_memory returns kb, convert to gb
-  let ram_gb = system.get_total_memory() / 10u64.pow(6);
+  let cpus = num_cpus::get() as u64;
+  // get_total_memory returns bytes, convert to gb
+  let ram_gb = psutil::memory::virtual_memory().unwrap().total() / 10u64.pow(9);
 
   std::cmp::max(
     match encoder {
       Encoder::aom | Encoder::rav1e | Encoder::libvpx => std::cmp::min(
-        (cpu as f64 / 3.0).round() as u64,
+        (cpus as f64 / 3.0).round() as u64,
         (ram_gb as f64 / 1.5).round() as u64,
       ),
       Encoder::svt_av1 | Encoder::svt_vp9 | Encoder::x264 | Encoder::x265 => {
-        std::cmp::min(cpu, ram_gb) / 8
+        std::cmp::min(cpus, ram_gb) / 8
       }
     },
     1,

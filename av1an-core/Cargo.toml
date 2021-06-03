@@ -12,7 +12,6 @@ av-ivf = { git = "https://github.com/rust-av/ivf-rs", rev = "031aab76d1fc70a4b85
 av-scenechange = "0.5.0"
 anyhow = "1.0.40"
 num_cpus = "1.13.0"
-sysinfo = "0.18.0"
 vapoursynth = { version = "0.3.0", features = ["vsscript-functions", "vapoursynth-functions"] }
 num-rational = "0.4.0"
 failure = "0.1.8"
@@ -20,3 +19,8 @@ regex = "1.5.4"
 thiserror = "1.0.24"
 y4m = "0.7.0"
 rav1e = { version = "0.4.1", features = ["asm", "scenechange"] }
+psutil = "3.2.1"
+strum = "0.21.0"
+strum_macros = "0.21.1"
+circular-queue = "0.2.6"
+serde = { version = "1.0.126", features = ["serde_derive"] }
