@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::encoder::Chunk;
 use crate::vapoursynth;
 
+// TODO refactor this into general frame splits -> Chunk conversion function
 #[must_use]
 pub fn create_video_queue_vs(input: &Path, split_locations: &[usize]) -> Vec<Chunk> {
   let last_frame = vapoursynth::get_num_frames(input).unwrap();

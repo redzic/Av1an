@@ -9,7 +9,6 @@ edition = "2018"
 log = "0.4.14"
 av-format = "0.3.1"
 av-ivf = { git = "https://github.com/rust-av/ivf-rs", rev = "031aab76d1fc70a4b8518dc2ef5c3f4f1d839721" }
-av-scenechange = "0.5.0"
 anyhow = "1.0.40"
 num_cpus = "1.13.0"
 vapoursynth = { version = "0.3.0", features = ["vsscript-functions", "vapoursynth-functions"] }
@@ -23,4 +22,10 @@ psutil = "3.2.1"
 strum = "0.21.0"
 strum_macros = "0.21.1"
 circular-queue = "0.2.6"
-serde = { version = "1.0.126", features = ["serde_derive"] }
+rayon = "1.5.1"
+slog = "2.7.0"
+crossbeam = "0.8.1"
+
+[dependencies.av-scenechange]
+version = "0.5.0"
+default-features = false

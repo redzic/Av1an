@@ -1,5 +1,3 @@
-#![feature(trait_alias)]
-
 #[macro_use]
 extern crate log;
 
@@ -7,7 +5,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -23,7 +20,7 @@ pub mod target_quality;
 pub mod vapoursynth;
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
 pub enum Encoder {
   aom,
   rav1e,
@@ -36,7 +33,7 @@ pub enum Encoder {
   x265,
 }
 
-#[derive(Debug, PartialEq, Eq, EnumString, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, EnumString)]
 pub enum ConcatMethod {
   /// MKVToolNix
   #[strum(serialize = "mkvmerge")]
@@ -49,29 +46,30 @@ pub enum ConcatMethod {
   Ivf,
 }
 
-#[derive(Debug, EnumString, Serialize, Deserialize)]
+#[derive(Debug, EnumString)]
 pub enum SplitMethod {
   PySceneDetect,
   AOMKeyframes,
   FFmpeg,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Serialize, Deserialize)]
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
 pub enum ChunkMethod {
   #[strum(serialize = "select")]
   Select,
   #[strum(serialize = "ffms2")]
   FFMS2,
-  #[strum(serialize = "lsmash")]
-  LSMASH,
+  #[strum(serialize = "l-smash")]
+  L_SMASH,
   #[strum(serialize = "hybrid")]
   Hybrid,
 }
 
 pub fn hash_path(path: &Path) -> PathBuf {
-  let mut s = DefaultHasher::new();
+  let mut s = DefaultHasher::default();
   path.hash(&mut s);
-  PathBuf::from(&format!(".{}", s.finish())[..8])
+  PathBuf::from(&format!(".{:x}", s.finish())[..8])
 }
 
 /// Check for FFmpeg
@@ -89,16 +87,16 @@ pub fn adapt_probing_rate(rate: usize) -> usize {
 }
 
 /// Determine the optimal number of workers for an encoder
-pub fn determine_workers(encoder: Encoder) -> u64 {
-  let cpus = num_cpus::get() as u64;
+pub fn determine_workers(encoder: Encoder) -> usize {
+  let cpus = num_cpus::get();
   // get_total_memory returns bytes, convert to gb
-  let ram_gb = psutil::memory::virtual_memory().unwrap().total() / 10u64.pow(9);
+  let ram_gb = psutil::memory::virtual_memory().unwrap().total() as usize / 10usize.pow(9);
 
   std::cmp::max(
     match encoder {
       Encoder::aom | Encoder::rav1e | Encoder::libvpx => std::cmp::min(
-        (cpus as f64 / 3.0).round() as u64,
-        (ram_gb as f64 / 1.5).round() as u64,
+        (cpus as f64 / 3.0).round() as usize,
+        (ram_gb as f64 / 1.5).round() as usize,
       ),
       Encoder::svt_av1 | Encoder::svt_vp9 | Encoder::x264 | Encoder::x265 => {
         std::cmp::min(cpus, ram_gb) / 8

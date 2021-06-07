@@ -12,7 +12,6 @@ pub struct Chunk {
 pub struct PassProgress {
   pub chunk_index: usize,
   pub frames_encoded: usize,
-  pub fps: f32,
 }
 
 #[derive(Copy, Clone, Debug)]

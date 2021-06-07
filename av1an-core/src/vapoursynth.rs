@@ -292,7 +292,7 @@ pub fn create_vapoursynth_source_script(
     "cache.{}",
     match chunk_method {
       ChunkMethod::FFMS2 => "ffindex",
-      ChunkMethod::LSMASH => "lwi",
+      ChunkMethod::L_SMASH => "lwi",
       _ => return Err(anyhow!("Cannot create vapoursynth script for chunk method")),
     }
   )));
@@ -304,7 +304,7 @@ pub fn create_vapoursynth_source_script(
 core.{}({:?}, cachefile={:?}).set_output()",
       match chunk_method {
         ChunkMethod::FFMS2 => "ffms2.Source",
-        ChunkMethod::LSMASH => "lsmas.LWLibavSource",
+        ChunkMethod::L_SMASH => "lsmas.LWLibavSource",
         _ => unreachable!(),
       },
       source,
@@ -323,16 +323,19 @@ pub fn create_vapoursynth_scenedetect_script(
   chunk_method: ChunkMethod,
 ) -> anyhow::Result<PathBuf> {
   let source = Path::new(source).canonicalize()?;
-  let load_script_path = temp.join("loadscript.vpy");
+  let load_script_path = temp.join("scenedetect.vpy");
 
   let mut load_script = File::create(&load_script_path)?;
 
   let cache_file = std::env::current_dir()?.join(temp.join(format!(
-    "cache_scenedetect.{}",
+    "cache.{}",
     match chunk_method {
       ChunkMethod::FFMS2 => "ffindex",
-      ChunkMethod::LSMASH => "lwi",
-      _ => return Err(anyhow!("Cannot create vapoursynth script for chunk method")),
+      ChunkMethod::L_SMASH => "lwi",
+      _ =>
+        return Err(anyhow!(
+          "Cannot create scenedetect vapoursynth script for chunk method"
+        )),
     }
   )));
 
@@ -344,7 +347,7 @@ core = vapoursynth.get_core()
 core.resize.Bilinear(core.{}({:?}, cachefile={:?}), width=640, height=360, format=vapoursynth.YUV420P8).set_output()",
       match chunk_method {
         ChunkMethod::FFMS2 => "ffms2.Source",
-        ChunkMethod::LSMASH => "lsmas.LWLibavSource",
+        ChunkMethod::L_SMASH => "lsmas.LWLibavSource",
         _ => unreachable!(),
       },
       source,
