@@ -23,13 +23,13 @@ impl<'a> Aom<'a> {
       // TODO remove unused parameter
       |encoder_args, output_file| {
         let mut first_pass = Command::new("aomenc");
-        first_pass.args(&["--passes=2", "--pass=1"]);
+        first_pass.args(&["-", "--passes=2", "--pass=1"]);
         first_pass.args(encoder_args);
         first_pass.arg(format!(
           "--fpf={}",
           output_file.as_os_str().to_string_lossy()
         ));
-        first_pass.args(&["-o", "/dev/null", "-"]);
+        first_pass.args(&["-o", "-"]);
         first_pass
       },
       |encoder_args, output_file| {

@@ -21,7 +21,6 @@ rav1e = { version = "0.4.1", features = ["asm", "scenechange"] }
 psutil = "3.2.1"
 strum = "0.21.0"
 strum_macros = "0.21.1"
-circular-queue = "0.2.6"
 rayon = "1.5.1"
 slog = "2.7.0"
 crossbeam = "0.8.1"

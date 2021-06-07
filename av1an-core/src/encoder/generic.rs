@@ -196,6 +196,11 @@ impl<
       let pipe = pipe.join().unwrap();
       first_pass.wait().unwrap();
 
+      info!(
+        logger,
+        "first pass (chunk {}) supposedly finished", chunk.index
+      );
+
       // wait for first pass file to exist, causes issues otherwise
       while !output.0.exists() {}
 
@@ -209,7 +214,7 @@ impl<
 
       let mut stdin = second_pass.stdin.take().unwrap();
 
-      let vspipe = s.spawn(move |_| {
+      let pipe = s.spawn(move |_| {
         pipe(input, chunk.start, chunk.end, &mut stdin);
       });
 
@@ -234,7 +239,7 @@ impl<
         }
       }
 
-      vspipe.join().unwrap();
+      pipe.join().unwrap();
       second_pass.wait().unwrap();
 
       info!(logger, "Chunk {} finished", chunk.index);

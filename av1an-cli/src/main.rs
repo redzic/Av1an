@@ -9,11 +9,11 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Instant;
 
-use av1an_core::chunk::create_video_queue_vs;
-use av1an_core::encoder::generic::ParallelEncode;
-use av1an_core::encoder::{self, TwoPassProgress};
-use av1an_core::hash_path;
-use av1an_core::{scenedetect, ChunkMethod, ConcatMethod, Encoder};
+use av1an::chunk::create_video_queue_vs;
+use av1an::encoder::generic::ParallelEncode;
+use av1an::encoder::{self, TwoPassProgress};
+use av1an::{hash_path, vapoursynth};
+use av1an::{scenedetect, ChunkMethod, ConcatMethod, Encoder};
 
 use clap::{App, Arg};
 use dialoguer::Confirm;
@@ -179,7 +179,7 @@ Toolchain:  rustc {} (LLVM version {})
       arg: "--workers",
       msg: format!("{}", e),
     })?,
-    None => av1an_core::determine_workers(encoder),
+    None => av1an::determine_workers(encoder),
   };
 
   let chunk_method: ChunkMethod = matches.value_of("CHUNK_METHOD").unwrap().parse().unwrap();
@@ -232,18 +232,12 @@ pub fn _main() -> anyhow::Result<()> {
   let _ = fs::create_dir(&encode_dir);
   let _ = fs::create_dir(&splits_dir);
 
-  let vsinput = av1an_core::vapoursynth::create_vapoursynth_source_script(
-    &splits_dir,
-    input,
-    args.chunk_method,
-  )?;
+  let vsinput =
+    vapoursynth::create_vapoursynth_source_script(&splits_dir, input, args.chunk_method)?;
   let vsinput = vsinput.as_path();
 
-  let downscaled = av1an_core::vapoursynth::create_vapoursynth_scenedetect_script(
-    &splits_dir,
-    input,
-    args.chunk_method,
-  )?;
+  let downscaled =
+    vapoursynth::create_vapoursynth_scenedetect_script(&splits_dir, input, args.chunk_method)?;
 
   if args.output.exists() {
     if !Confirm::new()
@@ -259,7 +253,7 @@ pub fn _main() -> anyhow::Result<()> {
     }
   }
 
-  let total_frames = av1an_core::vapoursynth::get_num_frames(&vsinput).unwrap() as u64;
+  let total_frames = vapoursynth::get_num_frames(&vsinput).unwrap() as u64;
 
   // TODO use formula instead?
   let total_frames_width = total_frames.to_string().len();
@@ -320,6 +314,8 @@ pub fn _main() -> anyhow::Result<()> {
       "--cq-level=30",
       "--end-usage=q",
       "--threads=8",
+      "-b",
+      "10",
     ],
   );
 
@@ -335,7 +331,7 @@ pub fn _main() -> anyhow::Result<()> {
     let t = s.spawn(move |_| {
       aomenc.0.encode(
         vsinput,
-        av1an_core::vapoursynth::pipe,
+        vapoursynth::pipe,
         (splits_dir, encode_dir),
         splits,
         log,
@@ -401,8 +397,7 @@ pub fn _main() -> anyhow::Result<()> {
       };
 
       // We can continuously sum up the total number of frames encoded instead of recalculating
-      // the sum of the encoded frames per chunk every time this loop body is entered, which
-      // saves a few CPU cycles.
+      // the sum of the encoded frames per chunk every time
       unsafe {
         // SAFETY: `pass` will always be 0 or 1, so it can never be out of bounds since
         // `progress` will always have 2 elements.
