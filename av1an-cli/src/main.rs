@@ -1,25 +1,27 @@
+use ringbuffer::{ConstGenericRingBuffer, RingBuffer, RingBufferExt, RingBufferWrite};
 use slog::{error, info, o};
 use slog::{Drain, Logger};
-use std::fs::File;
 
 use std::ffi::OsStr;
 use std::fs;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Instant;
 
 use av1an::chunk::create_video_queue_vs;
+use av1an::encoder;
 use av1an::encoder::generic::ParallelEncode;
-use av1an::encoder::{self, TwoPassProgress};
-use av1an::{hash_path, vapoursynth};
+use av1an::encoder::PassProgress;
+use av1an::hash_path;
+use av1an::vapoursynth;
 use av1an::{scenedetect, ChunkMethod, ConcatMethod, Encoder};
 
 use clap::{App, Arg};
 use dialoguer::Confirm;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 
-use circular_queue::CircularQueue;
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -211,7 +213,7 @@ Toolchain:  rustc {} (LLVM version {})
 }
 
 /// Unicode characters used to create a "finer" or smoother-looking progress bar
-const FINE_PROGRESS_CHARS: &str = "█▉▊▋▌▍▎▏  ";
+// const FINE_PROGRESS_CHARS: &str = "█▉▊▋▌▍▎▏  ";
 
 #[inline(always)]
 pub fn _main() -> anyhow::Result<()> {
@@ -262,15 +264,13 @@ pub fn _main() -> anyhow::Result<()> {
   let (sender, receiver) = mpsc::channel();
 
   bar.set_style(
-    ProgressStyle::default_bar()
-      .template(
-        format!(
-          "{{prefix:.bold}}▕{{bar:60.blue}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
-          total_frames_width
-        )
-        .as_str(),
+    ProgressStyle::default_bar().template(
+      format!(
+        "{{prefix:.bold}}▕{{bar:60}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
+        total_frames_width
       )
-      .progress_chars(FINE_PROGRESS_CHARS),
+      .as_str(),
+    ), // .progress_chars(FINE_PROGRESS_CHARS),
   );
   bar.set_prefix("Scene detection");
 
@@ -302,10 +302,9 @@ pub fn _main() -> anyhow::Result<()> {
   let splits = create_video_queue_vs(vsinput, &scene_changes);
   let splits = splits.as_slice();
 
-  info!(log, "scenes = {:#?}", splits);
-  info!(log, "number of chunks = {}", splits.len());
+  info!(log, "scenes({}) = {:#?}", splits.len(), splits);
 
-  let (tx, rx): (Sender<TwoPassProgress>, _) = mpsc::channel();
+  let (tx, rx): (Sender<PassProgress>, _) = mpsc::channel();
 
   let mut aomenc = encoder::aom::Aom::new(
     tx,
@@ -328,7 +327,29 @@ pub fn _main() -> anyhow::Result<()> {
   let encode_dir = encode_dir.as_path();
 
   crossbeam::thread::scope(|s| {
-    let t = s.spawn(move |_| {
+    // let log2 = log.clone();
+    let mut progress: (Box<[usize]>, usize) = (vec![0; splits.len()].into_boxed_slice(), 0);
+
+    let bar = ProgressBar::new(total_frames);
+
+    bar.set_style(
+      ProgressStyle::default_bar().template(
+        format!(
+          "{{prefix:.bold}}▕{{bar:60}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
+          total_frames_width
+        )
+        .as_str(),
+      ), // .progress_chars(FINE_PROGRESS_CHARS),
+    );
+    bar.set_prefix("         Encode");
+    bar.set_message("  0%\t  0.00 fps");
+    bar.set_position(0);
+
+    let mut frame_times = ConstGenericRingBuffer::<f32, 256>::new();
+
+    let mut timer = Instant::now();
+
+    let encode = s.spawn(move |_| {
       aomenc.0.encode(
         vsinput,
         vapoursynth::pipe,
@@ -338,70 +359,19 @@ pub fn _main() -> anyhow::Result<()> {
       );
     });
 
-    let mut progress: [(Box<[usize]>, usize); 2] = [
-      // First pass progress information
-      (vec![0; splits.len()].into_boxed_slice(), 0),
-      // Second pass progress information
-      (vec![0; splits.len()].into_boxed_slice(), 0),
-    ];
-
-    let progress_bars = MultiProgress::new();
-
-    let bars = [
-      progress_bars.add(ProgressBar::new(total_frames)),
-      progress_bars.add(ProgressBar::new(total_frames)),
-    ];
-
-    bars[0].set_style(
-      ProgressStyle::default_bar()
-        .template(
-          format!(
-            "{{prefix:.bold}}▕{{bar:60.green}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
-            total_frames_width
-          )
-          .as_str(),
-        )
-        .progress_chars(FINE_PROGRESS_CHARS),
-    );
-    bars[0].set_prefix("     First pass");
-
-    bars[1].set_style(
-      ProgressStyle::default_bar()
-        .template(
-          format!(
-            "{{prefix:.bold}}▕{{bar:60.magenta}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
-            total_frames_width
-          )
-          .as_str(),
-        )
-        .progress_chars(FINE_PROGRESS_CHARS),
-    );
-    bars[1].set_prefix("    Second pass");
-
-    for bar in &bars {
-      bar.set_position(0);
-      bar.set_message("  0%\t  0.00 fps");
-    }
-
-    let mut frame_times: [CircularQueue<f32>; 2] = [
-      CircularQueue::with_capacity(240),
-      CircularQueue::with_capacity(240),
-    ];
-
-    let mut timers: [Instant; 2] = [Instant::now(); 2];
-
     while let Ok(p) = rx.recv() {
-      let (frames, chunk_index, pass) = match p {
-        TwoPassProgress::FirstPass(p) => (p.frames_encoded, p.chunk_index, 0),
-        TwoPassProgress::SecondPass(p) => (p.frames_encoded, p.chunk_index, 1),
-      };
+      let PassProgress {
+        frames_encoded: frames,
+        chunk_index,
+      } = p;
+
+      // let mut _start;
+      // let mut _end;
 
       // We can continuously sum up the total number of frames encoded instead of recalculating
       // the sum of the encoded frames per chunk every time
       unsafe {
-        // SAFETY: `pass` will always be 0 or 1, so it can never be out of bounds since
-        // `progress` will always have 2 elements.
-        let (progress, sum) = progress.get_unchecked_mut(pass);
+        let (progress, sum) = &mut progress;
 
         // SAFETY: `chunk_index` will always be in range of `progress`, because the initialization
         // of progress and the value of `chunk_index` are both based on the length of the splits.
@@ -416,33 +386,30 @@ pub fn _main() -> anyhow::Result<()> {
         *progress.get_unchecked_mut(chunk_index) = frames;
 
         let new_instant = Instant::now();
-        frame_times
-          .get_unchecked_mut(pass)
-          .push((new_instant - *timers.get_unchecked(pass)).as_secs_f32());
-        *timers.get_unchecked_mut(pass) = new_instant;
+
+        // _start = Instant::now();
+        frame_times.push((new_instant - timer).as_secs_f32());
+
+        timer = new_instant;
 
         if new_frames > 0 {
-          let fps = frame_times.get_unchecked(pass).len() as f32
-            / frame_times.get_unchecked(pass).iter().sum::<f32>();
+          bar.set_position(*sum as u64);
+          let fps = frame_times.len() as f32 / frame_times.iter().sum::<f32>();
 
-          bars.get_unchecked(pass).set_position(*sum as u64);
-          bars.get_unchecked(pass).set_message(format!(
+          bar.set_message(format!(
             "{:3}%\t{:>6.2} fps",
             100 * *sum as u64 / total_frames,
             fps
           ));
         }
+        // _end = Instant::now();
       }
+
+      // info!(log2, "loop iteration took {:?}", _end - _start);
     }
 
-    t.join().unwrap();
-
-    for bar in &bars {
-      bar.finish();
-    }
-
-    println!("Concatenating...");
-
+    encode.join().unwrap();
+    bar.finish();
     println!("Took {:.2?}", encode_start_time.elapsed());
   })
   .unwrap();

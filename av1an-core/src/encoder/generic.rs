@@ -5,10 +5,11 @@ use std::process::{ChildStdin, Command, Stdio};
 use std::string::FromUtf8Error;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::Duration;
 
 use slog::{info, Logger};
 
-use crate::encoder::{Chunk, PassProgress, TwoPassProgress};
+use crate::encoder::{Chunk, PassProgress};
 
 /// API for encoding a single chunk. For a high-level API to encode
 /// an entire video, use <TODO>.
@@ -89,39 +90,34 @@ impl PipeStreamReader {
 #[derive(Clone)]
 pub struct TwoPassEncoder<
   'a,
-  FpParseFunc: Fn(&str) -> Option<usize>,
-  SpParseFunc: Fn(&str) -> Option<usize>,
+  ParseFunc: Fn(&str) -> Option<usize>,
   FpGen: Fn(&[&str], &Path) -> Command,
   SpGen: Fn(&[&str], (&Path, &Path)) -> Command,
 > {
-  first_pass_parse_func: FpParseFunc,
-  second_pass_parse_func: SpParseFunc,
+  parse_func: ParseFunc,
   first_pass_gen: FpGen,
   second_pass_gen: SpGen,
-  progress_sender: Sender<TwoPassProgress>,
+  progress_sender: Sender<PassProgress>,
   encoder_args: &'a [&'a str],
 }
 
 // TODO make param types name consistent
 impl<
     'a,
-    FpParseFunc: Fn(&str) -> Option<usize>,
-    SpParseFunc: Fn(&str) -> Option<usize>,
+    ParseFunc: Fn(&str) -> Option<usize>,
     FpGen: Fn(&[&str], &Path) -> Command,
     SpGen: Fn(&[&str], (&Path, &Path)) -> Command,
-  > TwoPassEncoder<'a, FpParseFunc, SpParseFunc, FpGen, SpGen>
+  > TwoPassEncoder<'a, ParseFunc, FpGen, SpGen>
 {
   pub fn new(
-    first_pass_parse_func: FpParseFunc,
-    second_pass_parse_func: SpParseFunc,
+    parse_func: ParseFunc,
     first_pass_gen: FpGen,
     second_pass_gen: SpGen,
-    progress_sender: Sender<TwoPassProgress>,
+    progress_sender: Sender<PassProgress>,
     encoder_args: &'a [&'a str],
   ) -> Self {
     Self {
-      first_pass_parse_func,
-      second_pass_parse_func,
+      parse_func,
       first_pass_gen,
       second_pass_gen,
       progress_sender,
@@ -139,12 +135,11 @@ impl<
     // this would involve using scoped thread instead
     T,
     Pipe: Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync,
-    FpFrameParseFunc: Fn(&str) -> Option<usize> + Clone,
-    SpFrameParseFunc: Fn(&str) -> Option<usize> + Clone,
+    ParseFunc: Fn(&str) -> Option<usize> + Clone,
     FpCmdGen: Fn(&[&str], &Path) -> Command,
     SpCmdGen: Fn(&[&str], (&Path, &Path)) -> Command,
-  > EncodeChunk<Pipe, &Path, TwoPassProgress, (&Path, &Path), Logger>
-  for TwoPassEncoder<'a, FpFrameParseFunc, SpFrameParseFunc, FpCmdGen, SpCmdGen>
+  > EncodeChunk<Pipe, &Path, PassProgress, (&Path, &Path), Logger>
+  for TwoPassEncoder<'a, ParseFunc, FpCmdGen, SpCmdGen>
 {
   fn encode_chunk(
     &mut self,
@@ -152,7 +147,7 @@ impl<
     pipe: Pipe,
     input: &Path,
     chunk: Chunk,
-    progress: Sender<TwoPassProgress>,
+    progress: Sender<PassProgress>,
     logger: &mut Logger,
   ) {
     info!(logger, "Chunk {} spawned", chunk.index);
@@ -172,37 +167,30 @@ impl<
         pipe
       });
 
-      let stderr = first_pass.stderr.take().unwrap();
-      let out = PipeStreamReader::new(Box::new(stderr));
-
-      for line in out.lines {
-        match line {
-          Ok(PipedLine::Line(s)) => {
-            let s = s.as_str();
-            info!(logger, "pass 1 (chunk {}): {}", chunk.index, s);
-            if let Some(frame) = (self.first_pass_parse_func.clone())(s) {
-              progress
-                .send(TwoPassProgress::FirstPass(PassProgress {
-                  chunk_index: chunk.index,
-                  frames_encoded: frame,
-                }))
-                .unwrap();
-            }
-          }
-          _ => break,
-        }
-      }
-
       let pipe = pipe.join().unwrap();
-      first_pass.wait().unwrap();
+      let fp = first_pass.wait_with_output().unwrap();
 
       info!(
         logger,
-        "first pass (chunk {}) supposedly finished", chunk.index
+        "first pass (chunk {}) supposedly finished with output: {:?}", chunk.index, fp
       );
 
       // wait for first pass file to exist, causes issues otherwise
-      while !output.0.exists() {}
+      for _try in 1usize.. {
+        if !output.0.exists() {
+          info!(
+            logger,
+            "waiting for {:?} to exist... (try {})", output.0, _try
+          );
+          thread::sleep(Duration::from_millis(250));
+        } else {
+          info!(
+            logger,
+            "first pass file {:?} exists! took {} tries", output.0, _try
+          );
+          break;
+        }
+      }
 
       // TODO fix output
       let mut second_pass = (self.second_pass_gen)(self.encoder_args, output)
@@ -225,13 +213,13 @@ impl<
         match line {
           Ok(PipedLine::Line(s)) => {
             let s = s.as_str();
-            info!(logger, "pass 2 (chunk {}): {}", chunk.index, s);
-            if let Some(frame) = (self.second_pass_parse_func)(s) {
+            // info!(logger, "pass 2 (chunk {}): {}", chunk.index, s);
+            if let Some(frame) = (self.parse_func)(s) {
               progress
-                .send(TwoPassProgress::SecondPass(PassProgress {
+                .send(PassProgress {
                   chunk_index: chunk.index,
                   frames_encoded: frame,
-                }))
+                })
                 .unwrap();
             }
           }
@@ -253,12 +241,11 @@ impl<
     // this would involve using scoped threads instead
     T,
     Pipe: Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync + Copy + Clone,
-    FpFrameParseFunc: Fn(&str) -> Option<usize> + Clone + Send,
-    SpFrameParseFunc: Fn(&str) -> Option<usize> + Clone + Send,
+    ParseFunc: Fn(&str) -> Option<usize> + Clone + Send,
     FpCmdGen: Fn(&[&str], &Path) -> Command + Clone + Send,
     SpCmdGen: Fn(&[&str], (&Path, &Path)) -> Command + Clone + Send,
-  > ParallelEncode<Pipe, (&'a Path, &'a Path), TwoPassProgress, &Path, Logger>
-  for TwoPassEncoder<'a, FpFrameParseFunc, SpFrameParseFunc, FpCmdGen, SpCmdGen>
+  > ParallelEncode<Pipe, (&'a Path, &'a Path), PassProgress, &Path, Logger>
+  for TwoPassEncoder<'a, ParseFunc, FpCmdGen, SpCmdGen>
 {
   fn encode(
     &mut self,

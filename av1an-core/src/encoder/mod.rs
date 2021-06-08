@@ -14,11 +14,5 @@ pub struct PassProgress {
   pub frames_encoded: usize,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum TwoPassProgress {
-  FirstPass(PassProgress),
-  SecondPass(PassProgress),
-}
-
 pub mod aom;
 pub mod generic;

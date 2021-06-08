@@ -3,12 +3,12 @@ use std::process::Command;
 use std::sync::mpsc::Sender;
 
 use crate::encoder::generic::TwoPassEncoder;
-use crate::encoder::TwoPassProgress;
+use crate::encoder::PassProgress;
 
+// TODO simplify definition for parsing first & second pass
 pub struct Aom<'a>(
   pub  TwoPassEncoder<
     'a,
-    fn(&str) -> Option<usize>,
     fn(&str) -> Option<usize>,
     fn(&[&str], &Path) -> Command,
     fn(&[&str], (&Path, &Path)) -> Command,
@@ -16,10 +16,9 @@ pub struct Aom<'a>(
 );
 
 impl<'a> Aom<'a> {
-  pub fn new(progress_sender: Sender<TwoPassProgress>, encoder_args: &'a [&'a str]) -> Self {
+  pub fn new(progress: Sender<PassProgress>, encoder_args: &'a [&'a str]) -> Self {
     Self(TwoPassEncoder::new(
-      parse_first_pass_frames,
-      parse_second_pass_frames,
+      parse_encoded_frames,
       // TODO remove unused parameter
       |encoder_args, output_file| {
         let mut first_pass = Command::new("aomenc");
@@ -44,66 +43,24 @@ impl<'a> Aom<'a> {
         second_pass.arg(output_file.1);
         second_pass
       },
-      progress_sender,
+      progress,
       encoder_args,
     ))
   }
 }
 
 const IRRELEVANT_CHARS: &str = "Pass -/- frame  ---/";
-const FIRST_PASS_CHARS: &str = "Pass 1/2 frame";
 
 /// Parse the number of frames encoded by aomenc for the second pass.
-fn parse_second_pass_frames(s: &str) -> Option<usize> {
+fn parse_encoded_frames(s: &str) -> Option<usize> {
   if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
-    unsafe { extract_second_pass_frames_sse2(s) }
+    unsafe { parse_encoded_frames_sse2(s) }
   } else {
-    extract_second_pass_frames_fallback(s)
+    parse_encoded_frames_fallback(s)
   }
 }
 
-/// Parse the number of frames encoded by aomenc for the first pass.
-fn parse_first_pass_frames(s: &str) -> Option<usize> {
-  if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
-    unsafe { extract_first_pass_frames_sse2(s) }
-  } else {
-    extract_first_pass_frames_fallback(s)
-  }
-}
-
-fn extract_first_pass_frames_fallback(s: &str) -> Option<usize> {
-  s.get(FIRST_PASS_CHARS.len()..IRRELEVANT_CHARS.len() - 1)?
-    .split_ascii_whitespace()
-    .map(|s| s.parse().ok())
-    .next()?
-}
-
-/// SSE2/AVX implementation of first pass frame parsing.
-#[target_feature(enable = "sse2")]
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-unsafe fn extract_first_pass_frames_sse2(s: &str) -> Option<usize> {
-  #[cfg(target_arch = "x86")]
-  use std::arch::x86::*;
-  #[cfg(target_arch = "x86_64")]
-  use std::arch::x86_64::*;
-
-  let _check = s.as_bytes().get(..FIRST_PASS_CHARS.len() + 16)?;
-
-  let s_subslice = s.get_unchecked(FIRST_PASS_CHARS.len()..);
-
-  // Unaligned load which reads 16 bytes.
-  let data = _mm_loadu_si128(s_subslice.as_ptr() as *const __m128i);
-  let mask = _mm_set1_epi8(b' ' as i8);
-  let cmp = _mm_cmpeq_epi8(data, mask);
-
-  let spaces = _mm_movemask_epi8(cmp).trailing_ones();
-
-  s.get_unchecked(FIRST_PASS_CHARS.len() + spaces as usize..IRRELEVANT_CHARS.len() - 1)
-    .parse()
-    .ok()
-}
-
-fn extract_second_pass_frames_fallback(s: &str) -> Option<usize> {
+fn parse_encoded_frames_fallback(s: &str) -> Option<usize> {
   let relevant_chars = s.get(IRRELEVANT_CHARS.len()..)?;
   relevant_chars
     .get(..relevant_chars.find(' ')?)?
@@ -115,7 +72,7 @@ fn extract_second_pass_frames_fallback(s: &str) -> Option<usize> {
 #[target_feature(enable = "sse2")]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 // TODO make all of this just accept byte slices
-unsafe fn extract_second_pass_frames_sse2(s: &str) -> Option<usize> {
+unsafe fn parse_encoded_frames_sse2(s: &str) -> Option<usize> {
   #[cfg(target_arch = "x86")]
   use std::arch::x86::*;
   #[cfg(target_arch = "x86_64")]
