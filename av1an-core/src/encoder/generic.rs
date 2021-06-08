@@ -134,7 +134,7 @@ impl<
     // W: 'a + Write + Send + Sync,
     // this would involve using scoped thread instead
     T,
-    Pipe: Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync,
+    Pipe: Clone + Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync,
     ParseFunc: Fn(&str) -> Option<usize> + Clone,
     FpCmdGen: Fn(&[&str], &Path) -> Command,
     SpCmdGen: Fn(&[&str], (&Path, &Path)) -> Command,
@@ -153,27 +153,36 @@ impl<
     info!(logger, "Chunk {} spawned", chunk.index);
 
     crossbeam::thread::scope(|s| {
-      let mut first_pass = (self.first_pass_gen)(self.encoder_args, output.0)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
+      for _try in 1usize.. {
+        let mut first_pass = (self.first_pass_gen)(self.encoder_args, output.0)
+          .stdout(Stdio::piped())
+          .stderr(Stdio::piped())
+          .stdin(Stdio::piped())
+          .spawn()
+          .unwrap();
+        let mut stdin = first_pass.stdin.take().unwrap();
 
-      let mut stdin = first_pass.stdin.take().unwrap();
+        let pipe = pipe.clone();
+        let pipe = s.spawn(move |_| {
+          pipe(input, chunk.start, chunk.end, &mut stdin);
+          pipe
+        });
 
-      let pipe = s.spawn(move |_| {
-        pipe(input, chunk.start, chunk.end, &mut stdin);
-        pipe
-      });
+        pipe.join().unwrap();
+        let fp = first_pass.wait_with_output().unwrap();
 
-      let pipe = pipe.join().unwrap();
-      let fp = first_pass.wait_with_output().unwrap();
+        info!(
+          logger,
+          "first pass (chunk {}) supposedly finished with output: {:?}", chunk.index, fp
+        );
 
-      info!(
-        logger,
-        "first pass (chunk {}) supposedly finished with output: {:?}", chunk.index, fp
-      );
+        info!(logger, "success? {}", fp.status.success());
+        if fp.status.success() {
+          break;
+        } else {
+          info!(logger, "retrying chunk {}... (try {})", chunk.index, _try);
+        }
+      }
 
       // wait for first pass file to exist, causes issues otherwise
       for _try in 1usize.. {
