@@ -169,18 +169,22 @@ impl<
         });
 
         pipe.join().unwrap();
-        let fp = first_pass.wait_with_output().unwrap();
+        let output = first_pass.wait_with_output().unwrap();
 
-        info!(
-          logger,
-          "first pass (chunk {}) supposedly finished with output: {:?}", chunk.index, fp
-        );
-
-        info!(logger, "success? {}", fp.status.success());
-        if fp.status.success() {
+        if output.status.success() {
+          info!(
+            logger,
+            "First pass (chunk {}) finished! took {} tries", chunk.index, _try
+          );
           break;
         } else {
-          info!(logger, "retrying chunk {}... (try {})", chunk.index, _try);
+          info!(
+            logger,
+            "First pass (chunk {}) failed with output: {:?}. Restarting... (try {})",
+            chunk.index,
+            output,
+            _try
+          );
         }
       }
 
