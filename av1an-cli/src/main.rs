@@ -211,9 +211,6 @@ Toolchain:  rustc {} (LLVM version {})
   })
 }
 
-/// Unicode characters used to create a "finer" or smoother-looking progress bar
-// const FINE_PROGRESS_CHARS: &str = "█▉▊▋▌▍▎▏  ";
-
 #[inline(always)]
 pub fn _main() -> anyhow::Result<()> {
   let args: CliOptions = parse_cli()?;
@@ -283,12 +280,6 @@ pub fn _main() -> anyhow::Result<()> {
 
   while let Ok(frames) = receiver.recv() {
     bar.set_position(frames as u64);
-    let fps = frames as f64 / encode_start_time.elapsed().as_secs_f64();
-    bar.set_message(format!(
-      "{:3}%\t{:>6.2} fps",
-      100 * frames as u64 / total_frames,
-      fps
-    ));
   }
 
   bar.finish();
@@ -317,7 +308,6 @@ pub fn _main() -> anyhow::Result<()> {
     .num_threads(args.workers)
     .build_global()?;
 
-  // TODO scoped threads
   let splits_dir = splits_dir.as_path();
   let encode_dir = encode_dir.as_path();
 
@@ -369,9 +359,7 @@ pub fn _main() -> anyhow::Result<()> {
         // SAFETY: Indexing by `chunk_index` is safe for the same reasons explained above.
         *progress.get_unchecked_mut(chunk_index) = frames;
 
-        if new_frames > 0 {
-          bar.set_position(*sum as u64);
-        }
+        bar.set_position(*sum as u64);
       }
     }
 
