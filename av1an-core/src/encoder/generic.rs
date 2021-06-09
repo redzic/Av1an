@@ -199,7 +199,7 @@ impl<
         } else {
           info!(
             logger,
-            "first pass file {:?} exists! took {} tries", output.0, _try
+            "First pass file {:?} exists! took {} tries", output.0, _try
           );
           break;
         }

@@ -10,13 +10,12 @@ av1an = { package = "av1an-core", path = "../av1an-core" }
 anyhow = "1.0.40"
 thiserror = "1.0.24"
 dialoguer = "0.8.0"
-indicatif = "0.16.2"
+indicatif = { path = "../indicatif" }
 rayon = "1.5.1"
 log = "0.4.14"
 slog = "2.7.0"
 slog-term = "2.8.0"
 crossbeam = "0.8.1"
-ringbuffer = "0.7.1"
 
 [dependencies.clap]
 version = "2.33.3"

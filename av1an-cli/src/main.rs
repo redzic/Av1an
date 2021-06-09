@@ -1,4 +1,3 @@
-use ringbuffer::{ConstGenericRingBuffer, RingBuffer, RingBufferExt, RingBufferWrite};
 use slog::{error, info, o};
 use slog::{Drain, Logger};
 
@@ -257,22 +256,18 @@ pub fn _main() -> anyhow::Result<()> {
 
   let total_frames = vapoursynth::get_num_frames(&vsinput).unwrap() as u64;
 
-  // TODO use formula instead?
-  let total_frames_width = total_frames.to_string().len();
+  println!("Scene detection");
 
   let bar = ProgressBar::new(total_frames);
   let (sender, receiver) = mpsc::channel();
 
   bar.set_style(
-    ProgressStyle::default_bar().template(
-      format!(
-        "{{prefix:.bold}}▕{{bar:60}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
-        total_frames_width
+    ProgressStyle::default_bar()
+      .template(
+        "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({fps}, {eta})",
       )
-      .as_str(),
-    ), // .progress_chars(FINE_PROGRESS_CHARS),
+      .progress_chars("#>-"),
   );
-  bar.set_prefix("Scene detection");
 
   let encode_start_time = Instant::now();
 
@@ -327,27 +322,7 @@ pub fn _main() -> anyhow::Result<()> {
   let encode_dir = encode_dir.as_path();
 
   crossbeam::thread::scope(|s| {
-    // let log2 = log.clone();
     let mut progress: (Box<[usize]>, usize) = (vec![0; splits.len()].into_boxed_slice(), 0);
-
-    let bar = ProgressBar::new(total_frames);
-
-    bar.set_style(
-      ProgressStyle::default_bar().template(
-        format!(
-          "{{prefix:.bold}}▕{{bar:60}}▏{{msg}}\t{{pos:>{}}}/{{len}}\teta {{eta}}",
-          total_frames_width
-        )
-        .as_str(),
-      ), // .progress_chars(FINE_PROGRESS_CHARS),
-    );
-    bar.set_prefix("         Encode");
-    bar.set_message("  0%\t  0.00 fps");
-    bar.set_position(0);
-
-    let mut frame_times = ConstGenericRingBuffer::<f32, 256>::new();
-
-    let mut timer = Instant::now();
 
     let encode = s.spawn(move |_| {
       aomenc.0.encode(
@@ -359,14 +334,23 @@ pub fn _main() -> anyhow::Result<()> {
       );
     });
 
+    println!("Encode");
+
+    let bar = ProgressBar::new(total_frames);
+
+    bar.set_style(
+      ProgressStyle::default_bar()
+        .template(
+          "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({fps}, {eta})",
+        )
+        .progress_chars("#>-"),
+    );
+
     while let Ok(p) = rx.recv() {
       let PassProgress {
         frames_encoded: frames,
         chunk_index,
       } = p;
-
-      // let mut _start;
-      // let mut _end;
 
       // We can continuously sum up the total number of frames encoded instead of recalculating
       // the sum of the encoded frames per chunk every time
@@ -385,27 +369,10 @@ pub fn _main() -> anyhow::Result<()> {
         // SAFETY: Indexing by `chunk_index` is safe for the same reasons explained above.
         *progress.get_unchecked_mut(chunk_index) = frames;
 
-        let new_instant = Instant::now();
-
-        // _start = Instant::now();
-        frame_times.push((new_instant - timer).as_secs_f32());
-
-        timer = new_instant;
-
         if new_frames > 0 {
           bar.set_position(*sum as u64);
-          let fps = frame_times.len() as f32 / frame_times.iter().sum::<f32>();
-
-          bar.set_message(format!(
-            "{:3}%\t{:>6.2} fps",
-            100 * *sum as u64 / total_frames,
-            fps
-          ));
         }
-        // _end = Instant::now();
       }
-
-      // info!(log2, "loop iteration took {:?}", _end - _start);
     }
 
     encode.join().unwrap();
