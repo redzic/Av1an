@@ -152,7 +152,7 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
   let concat = &temp.join("concat");
   let concat_file = concat.to_str().unwrap();
 
-  write_concat_file(&temp);
+  write_concat_file(temp);
 
   let audio_file = Path::new(&temp).join("audio.mkv");
 
@@ -181,7 +181,7 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
         "-safe",
         "0",
         "-i",
-        &concat_file,
+        concat_file,
       ])
       .args(audio_cmd)
       .args(&[
@@ -206,7 +206,7 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
         "-safe",
         "0",
         "-i",
-        &concat_file,
+        concat_file,
       ])
       .args(audio_cmd)
       .args(&["-c", "copy", "-sn", "-map", "0", output.to_str().unwrap()]),

@@ -1,4 +1,3 @@
-use rayon::prelude::*;
 use std::io::{self, Read};
 use std::path::Path;
 use std::process::{ChildStdin, Command, Stdio};
@@ -26,7 +25,15 @@ pub trait EncodeChunk<Pipe, Input, ProgressData: Copy, Output, Log> {
 }
 
 pub trait ParallelEncode<Pipe, Input, ProgressData: Copy, Output, Log> {
-  fn encode(&mut self, output: Output, pipe: Pipe, input: Input, chunks: &[Chunk], logger: Log);
+  fn encode(
+    &mut self,
+    output: Output,
+    pipe: Pipe,
+    input: Input,
+    chunks: &[Chunk],
+    logger: Log,
+    workers: usize,
+  );
 }
 
 #[derive(Debug)]
@@ -152,7 +159,7 @@ impl<
   ) {
     info!(logger, "Chunk {} spawned", chunk.index);
 
-    crossbeam::thread::scope(|s| {
+    crossbeam_utils::thread::scope(|s| {
       for _try in 1usize.. {
         let mut first_pass = (self.first_pass_gen)(self.encoder_args, output.0)
           .stdout(Stdio::piped())
@@ -189,18 +196,10 @@ impl<
       }
 
       // wait for first pass file to exist, causes issues otherwise
-      for _try in 1usize.. {
+      loop {
         if !output.0.exists() {
-          info!(
-            logger,
-            "waiting for {:?} to exist... (try {})", output.0, _try
-          );
           thread::sleep(Duration::from_millis(250));
         } else {
-          info!(
-            logger,
-            "First pass file {:?} exists! took {} tries", output.0, _try
-          );
           break;
         }
       }
@@ -226,7 +225,6 @@ impl<
         match line {
           Ok(PipedLine::Line(s)) => {
             let s = s.as_str();
-            // info!(logger, "pass 2 (chunk {}): {}", chunk.index, s);
             if let Some(frame) = (self.parse_func)(s) {
               progress
                 .send(PassProgress {
@@ -267,23 +265,43 @@ impl<
     output: (&'a Path, &'a Path),
     chunks: &[Chunk],
     logger: Logger,
+    workers: usize,
   ) {
-    chunks
-      .par_iter()
-      .for_each_with((self.clone(), logger.clone()), |(enc, logger), chunk| {
-        let first_pass_file = format!("fpf{}.log", chunk.index);
-        let second_pass_file = format!("{}.ivf", chunk.index);
-        enc.encode_chunk(
-          (
-            &output.0.join(first_pass_file.as_str()),
-            &output.1.join(second_pass_file.as_str()),
-          ),
-          pipe,
-          input,
-          *chunk,
-          enc.progress_sender.clone(),
-          logger,
-        );
-      });
+    let (sender, receiver) = crossbeam_channel::bounded(chunks.len());
+    for chunk in chunks {
+      sender.send(chunk).unwrap();
+    }
+    drop(sender);
+
+    crossbeam_utils::thread::scope(|s| {
+      let consumers: Vec<_> = (0..workers)
+        .map(|_| (receiver.clone(), self.clone(), logger.clone()))
+        .map(|(rx, mut enc, mut logger)| {
+          s.spawn(move |_| {
+            while let Ok(chunk) = rx.recv() {
+              let first_pass_file = format!("fpf{}.log", chunk.index);
+              let second_pass_file = format!("{}.ivf", chunk.index);
+
+              enc.encode_chunk(
+                (
+                  &output.0.join(first_pass_file.as_str()),
+                  &output.1.join(second_pass_file.as_str()),
+                ),
+                pipe,
+                input,
+                *chunk,
+                enc.progress_sender.clone(),
+                &mut logger,
+              );
+            }
+          })
+        })
+        .collect();
+
+      for consumer in consumers {
+        consumer.join().unwrap();
+      }
+    })
+    .unwrap();
   }
 }

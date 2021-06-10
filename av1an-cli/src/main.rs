@@ -215,6 +215,8 @@ Toolchain:  rustc {} (LLVM version {})
 pub fn _main() -> anyhow::Result<()> {
   let args: CliOptions = parse_cli()?;
 
+  println!("workers: {}", args.workers);
+
   let log_file = File::create("log.log").unwrap();
 
   let plain = slog_term::PlainSyncDecorator::new(log_file);
@@ -251,7 +253,7 @@ pub fn _main() -> anyhow::Result<()> {
     }
   }
 
-  let total_frames = vapoursynth::get_num_frames(&vsinput).unwrap() as u64;
+  let total_frames = vapoursynth::get_num_frames(vsinput).unwrap() as u64;
 
   println!("Scene detection");
 
@@ -287,7 +289,6 @@ pub fn _main() -> anyhow::Result<()> {
   let scene_changes = scene_changes.join().unwrap();
   let splits = create_video_queue_vs(vsinput, &scene_changes);
   let splits = splits.as_slice();
-
   info!(log, "scenes({}) = {:#?}", splits.len(), splits);
 
   let (tx, rx): (Sender<PassProgress>, _) = mpsc::channel();
@@ -295,23 +296,21 @@ pub fn _main() -> anyhow::Result<()> {
   let mut aomenc = encoder::aom::Aom::new(
     tx,
     &[
-      "--cpu-used=6",
-      "--cq-level=30",
-      "--end-usage=q",
       "--threads=8",
       "-b",
       "10",
+      "--cpu-used=6",
+      "--end-usage=q",
+      "--cq-level=30",
+      "--tile-columns=2",
+      "--tile-rows=1",
     ],
   );
-
-  rayon::ThreadPoolBuilder::new()
-    .num_threads(args.workers)
-    .build_global()?;
 
   let splits_dir = splits_dir.as_path();
   let encode_dir = encode_dir.as_path();
 
-  crossbeam::thread::scope(|s| {
+  crossbeam_utils::thread::scope(|s| {
     let mut progress: (Box<[usize]>, usize) = (vec![0; splits.len()].into_boxed_slice(), 0);
 
     let encode = s.spawn(move |_| {
@@ -321,6 +320,7 @@ pub fn _main() -> anyhow::Result<()> {
         (splits_dir, encode_dir),
         splits,
         log,
+        args.workers,
       );
     });
 
@@ -342,11 +342,11 @@ pub fn _main() -> anyhow::Result<()> {
         chunk_index,
       } = p;
 
+      let (progress, sum) = &mut progress;
+
       // We can continuously sum up the total number of frames encoded instead of recalculating
       // the sum of the encoded frames per chunk every time
       unsafe {
-        let (progress, sum) = &mut progress;
-
         // SAFETY: `chunk_index` will always be in range of `progress`, because the initialization
         // of progress and the value of `chunk_index` are both based on the length of the splits.
         //
@@ -365,9 +365,10 @@ pub fn _main() -> anyhow::Result<()> {
 
     encode.join().unwrap();
     bar.finish();
-    println!("Took {:.2?}", encode_start_time.elapsed());
   })
   .unwrap();
+
+  println!("Took {:.1?}", encode_start_time.elapsed());
 
   Ok(())
 }
