@@ -96,32 +96,31 @@ impl PipeStreamReader {
 
 #[derive(Clone)]
 pub struct TwoPassEncoder<
-  'a,
   ParseFunc: Fn(&str) -> Option<usize>,
-  FpGen: Fn(&[&str], &Path) -> Command,
-  SpGen: Fn(&[&str], (&Path, &Path)) -> Command,
+  FpGen: Fn(&[String], &Path) -> Command,
+  SpGen: Fn(&[String], (&Path, &Path)) -> Command,
 > {
   parse_func: ParseFunc,
   first_pass_gen: FpGen,
   second_pass_gen: SpGen,
   progress_sender: Sender<PassProgress>,
-  encoder_args: &'a [&'a str],
+  encoder_args: Vec<String>,
 }
 
 // TODO make param types name consistent
 impl<
     'a,
     ParseFunc: Fn(&str) -> Option<usize>,
-    FpGen: Fn(&[&str], &Path) -> Command,
-    SpGen: Fn(&[&str], (&Path, &Path)) -> Command,
-  > TwoPassEncoder<'a, ParseFunc, FpGen, SpGen>
+    FpGen: Fn(&[String], &Path) -> Command,
+    SpGen: Fn(&[String], (&Path, &Path)) -> Command,
+  > TwoPassEncoder<ParseFunc, FpGen, SpGen>
 {
   pub fn new(
     parse_func: ParseFunc,
     first_pass_gen: FpGen,
     second_pass_gen: SpGen,
     progress_sender: Sender<PassProgress>,
-    encoder_args: &'a [&'a str],
+    encoder_args: Vec<String>,
   ) -> Self {
     Self {
       parse_func,
@@ -143,10 +142,10 @@ impl<
     T,
     Pipe: Clone + Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync,
     ParseFunc: Fn(&str) -> Option<usize> + Clone,
-    FpCmdGen: Fn(&[&str], &Path) -> Command,
-    SpCmdGen: Fn(&[&str], (&Path, &Path)) -> Command,
+    FpCmdGen: Fn(&[String], &Path) -> Command,
+    SpCmdGen: Fn(&[String], (&Path, &Path)) -> Command,
   > EncodeChunk<Pipe, &Path, PassProgress, (&Path, &Path), Logger>
-  for TwoPassEncoder<'a, ParseFunc, FpCmdGen, SpCmdGen>
+  for TwoPassEncoder<ParseFunc, FpCmdGen, SpCmdGen>
 {
   fn encode_chunk(
     &mut self,
@@ -161,7 +160,7 @@ impl<
 
     crossbeam_utils::thread::scope(|s| {
       for _try in 1usize.. {
-        let mut first_pass = (self.first_pass_gen)(self.encoder_args, output.0)
+        let mut first_pass = (self.first_pass_gen)(&self.encoder_args, output.0)
           .stdout(Stdio::piped())
           .stderr(Stdio::piped())
           .stdin(Stdio::piped())
@@ -205,7 +204,7 @@ impl<
       }
 
       // TODO fix output
-      let mut second_pass = (self.second_pass_gen)(self.encoder_args, output)
+      let mut second_pass = (self.second_pass_gen)(&self.encoder_args, output)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::piped())
@@ -253,10 +252,10 @@ impl<
     T,
     Pipe: Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync + Copy + Clone,
     ParseFunc: Fn(&str) -> Option<usize> + Clone + Send,
-    FpCmdGen: Fn(&[&str], &Path) -> Command + Clone + Send,
-    SpCmdGen: Fn(&[&str], (&Path, &Path)) -> Command + Clone + Send,
+    FpCmdGen: Fn(&[String], &Path) -> Command + Clone + Send,
+    SpCmdGen: Fn(&[String], (&Path, &Path)) -> Command + Clone + Send,
   > ParallelEncode<Pipe, (&'a Path, &'a Path), PassProgress, &Path, Logger>
-  for TwoPassEncoder<'a, ParseFunc, FpCmdGen, SpCmdGen>
+  for TwoPassEncoder<ParseFunc, FpCmdGen, SpCmdGen>
 {
   fn encode(
     &mut self,

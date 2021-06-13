@@ -6,17 +6,16 @@ use crate::encoder::generic::TwoPassEncoder;
 use crate::encoder::PassProgress;
 
 // TODO simplify definition for parsing first & second pass
-pub struct Aom<'a>(
+pub struct Aom(
   pub  TwoPassEncoder<
-    'a,
     fn(&str) -> Option<usize>,
-    fn(&[&str], &Path) -> Command,
-    fn(&[&str], (&Path, &Path)) -> Command,
+    fn(&[String], &Path) -> Command,
+    fn(&[String], (&Path, &Path)) -> Command,
   >,
 );
 
-impl<'a> Aom<'a> {
-  pub fn new(progress: Sender<PassProgress>, encoder_args: &'a [&'a str]) -> Self {
+impl Aom {
+  pub fn new(progress: Sender<PassProgress>, encoder_args: Vec<String>) -> Self {
     Self(TwoPassEncoder::new(
       parse_encoded_frames,
       // TODO remove unused parameter

@@ -7,11 +7,9 @@ pub fn segment(input: &Path, temp: &Path, segments: Vec<usize>) {
   cmd.stdout(Stdio::piped());
   cmd.stderr(Stdio::piped());
 
+  cmd.args(&["-hide_banner", "-y", "-i"]);
+  cmd.arg(input);
   cmd.args(&[
-    "-hide_banner",
-    "-y",
-    "-i",
-    input.to_str().unwrap(),
     "-map",
     "0:v:0",
     "-an",

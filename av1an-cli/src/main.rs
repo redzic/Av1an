@@ -1,6 +1,3 @@
-use slog::{error, info, o};
-use slog::{Drain, Logger};
-
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
@@ -20,7 +17,8 @@ use av1an::{scenedetect, ChunkMethod, ConcatMethod, Encoder};
 use clap::{App, Arg};
 use dialoguer::Confirm;
 use indicatif::{ProgressBar, ProgressStyle};
-
+use slog::{error, info, o};
+use slog::{Drain, Logger};
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -103,7 +101,7 @@ Toolchain:  rustc {} (LLVM version {})
     .about("Cross-platform command-line AV1 / VP9 / HEVC / H264 encoding framework with per-scene quality encoding.")
     .usage("\
     av1an [OPTIONS] -i <INPUT> -o <OUTPUT>
-    av1an [OPTIONS] -e aom -v --cpu-used=5 --cq-level=25 -- -i <INPUT> -o <OUTPUT>")
+    av1an [OPTIONS] -v [VIDEO_PARAMS ...] -- -i <INPUT> -o <OUTPUT>")
     .arg(
       Arg::with_name("INPUT")
         .help("Input file or vapoursynth (.py, .vpy) script")
@@ -137,7 +135,6 @@ Toolchain:  rustc {} (LLVM version {})
         .help("Method for piping chunks into encoder instances")
         .short("c")
         .long("chunk")
-        .default_value("hybrid")
         .takes_value(true)
         .possible_values(&["hybrid", "select", "ffms2", "l-smash"])
     )
@@ -183,11 +180,23 @@ Toolchain:  rustc {} (LLVM version {})
     None => av1an::determine_workers(encoder),
   };
 
-  let chunk_method: ChunkMethod = matches.value_of("CHUNK_METHOD").unwrap().parse().unwrap();
+  let chunk_method = matches
+    .value_of("CHUNK_METHOD")
+    .and_then(|s| s.parse().ok())
+    .unwrap_or(ChunkMethod::Hybrid);
 
   let video_params: Vec<String> = match matches.values_of("VIDEO_PARAMS") {
     Some(v) => v.into_iter().map(|s| s.to_owned()).collect(),
-    None => Vec::with_capacity(0),
+    None => vec![
+      "--threads=8".into(),
+      "-b".into(),
+      "10".into(),
+      "--cpu-used=6".into(),
+      "--end-usage=q".into(),
+      "--cq-level=30".into(),
+      "--tile-columns=2".into(),
+      "--tile-rows=1".into(),
+    ],
   };
 
   // if !matches!(
@@ -293,22 +302,12 @@ pub fn _main() -> anyhow::Result<()> {
 
   let (tx, rx): (Sender<PassProgress>, _) = mpsc::channel();
 
-  let mut aomenc = encoder::aom::Aom::new(
-    tx,
-    &[
-      "--threads=8",
-      "-b",
-      "10",
-      "--cpu-used=6",
-      "--end-usage=q",
-      "--cq-level=30",
-      "--tile-columns=2",
-      "--tile-rows=1",
-    ],
-  );
+  let mut aomenc = encoder::aom::Aom::new(tx, args.video_params);
 
   let splits_dir = splits_dir.as_path();
   let encode_dir = encode_dir.as_path();
+
+  let workers = args.workers;
 
   crossbeam_utils::thread::scope(|s| {
     let mut progress: (Box<[usize]>, usize) = (vec![0; splits.len()].into_boxed_slice(), 0);
@@ -320,7 +319,7 @@ pub fn _main() -> anyhow::Result<()> {
         (splits_dir, encode_dir),
         splits,
         log,
-        args.workers,
+        workers,
       );
     });
 

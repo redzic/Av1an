@@ -26,8 +26,8 @@ pub fn get_scene_changes(
         fast_analysis: true,
         ignore_flashes: true,
         lookahead_distance: 5,
-        max_scenecut_distance: Some(240),
-        min_scenecut_distance: Some(48),
+        max_scenecut_distance: Some(200),
+        min_scenecut_distance: Some(12),
       },
       callback,
     )
