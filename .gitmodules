@@ -1,3 +1,4 @@
 [submodule "indicatif"]
 	path = indicatif
-	url = https://github.com/mitsuhiko/indicatif
+	url = https://github.com/redzic/indicatif
+	branch = fps-template
