@@ -4,6 +4,18 @@
     </br>
 </h1>
 
+Fork, being rewritten in Rust from scratch.
+
+Build instructions:
+
+```
+git clone --recurse-submodules https://github.com/redzic/Av1an
+cd Av1an
+cargo build --release
+```
+
+The binary will then be located at `./target/release/av1an`.
+
 <h2 align="center">A cross-platform framework to streamline encoding</h2>
 
 ![alt text](https://cdn.discordapp.com/attachments/696849974666985494/774368268860915732/av1an_pick2.png)

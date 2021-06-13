@@ -220,6 +220,8 @@ Toolchain:  rustc {} (LLVM version {})
   })
 }
 
+const INDICATIF_PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {percent:>3}%   {pos}/{len} ({fps}, {eta})";
+
 #[inline(always)]
 pub fn _main() -> anyhow::Result<()> {
   let args: CliOptions = parse_cli()?;
@@ -271,9 +273,7 @@ pub fn _main() -> anyhow::Result<()> {
 
   bar.set_style(
     ProgressStyle::default_bar()
-      .template(
-        "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({fps}, {eta})",
-      )
+      .template(INDICATIF_PROGRESS_TEMPLATE)
       .progress_chars("#>-"),
   );
 
@@ -329,9 +329,7 @@ pub fn _main() -> anyhow::Result<()> {
 
     bar.set_style(
       ProgressStyle::default_bar()
-        .template(
-          "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({fps}, {eta})",
-        )
+        .template(INDICATIF_PROGRESS_TEMPLATE)
         .progress_chars("#>-"),
     );
 
