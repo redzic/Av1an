@@ -220,7 +220,7 @@ Toolchain:  rustc {} (LLVM version {})
   })
 }
 
-const INDICATIF_PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {percent:>3}%   {pos}/{len} ({fps}, {eta})";
+const INDICATIF_PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] [{bar:60.cyan/blue}] {percent:>3.bold}% {pos}/{len} ({fps:.bold}, {eta})";
 
 #[inline(always)]
 pub fn _main() -> anyhow::Result<()> {
