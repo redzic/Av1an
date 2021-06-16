@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::fs::remove_dir_all;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
@@ -14,6 +15,7 @@ use av1an::hash_path;
 use av1an::vapoursynth;
 use av1an::{scenedetect, ChunkMethod, ConcatMethod, Encoder};
 
+use clap::AppSettings;
 use clap::{App, Arg};
 use dialoguer::Confirm;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -56,6 +58,7 @@ impl From<&OsStr> for Input {
 pub struct CliOptions {
   pub input: Input,
   pub output: PathBuf,
+  pub keep: bool,
   pub temp_dir: PathBuf,
   pub encoder: Encoder,
   pub video_params: Vec<String>,
@@ -102,6 +105,7 @@ Toolchain:  rustc {} (LLVM version {})
     .usage("\
     av1an [OPTIONS] -i <INPUT> -o <OUTPUT>
     av1an [OPTIONS] -v [VIDEO_PARAMS ...] -- -i <INPUT> -o <OUTPUT>")
+    .setting(AppSettings::ColoredHelp)
     .arg(
       Arg::with_name("INPUT")
         .help("Input file or vapoursynth (.py, .vpy) script")
@@ -115,6 +119,11 @@ Toolchain:  rustc {} (LLVM version {})
         .required(true)
         .short("o")
         .takes_value(true)
+    )
+    .arg(
+      Arg::with_name("KEEP")
+        .help("Do not delete temporary files after encoding")
+        .long("keep")
     )
     .arg(
       Arg::with_name("ENCODER")
@@ -199,18 +208,11 @@ Toolchain:  rustc {} (LLVM version {})
     ],
   };
 
-  // if !matches!(
-  //   encoder,
-  //   Encoder::aom | Encoder::rav1e | Encoder::svt_av1 | Encoder::svt_vp9 | Encoder::libvpx
-  // ) && concat == ConcatMethod::Ivf
-  // {
-  //   return Err(CliError::InvalidConcatMethod);
-  // }
-
   Ok(CliOptions {
     input,
     output,
     encoder,
+    keep: matches.is_present("KEEP"),
     temp_dir,
     concat_method: ConcatMethod::FFmpeg,
     chunk_method,
@@ -220,13 +222,18 @@ Toolchain:  rustc {} (LLVM version {})
   })
 }
 
-const INDICATIF_PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] [{bar:60.cyan/blue}] {percent:>3.bold}% {pos}/{len} ({fps:.bold}, {eta})";
+const INDICATIF_PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] [{bar:60.cyan/blue}] {percent:>3.bold}% {pos}/{len} ({fps:.bold}, eta {eta})";
 
 #[inline(always)]
 pub fn _main() -> anyhow::Result<()> {
   let args: CliOptions = parse_cli()?;
 
-  println!("workers: {}", args.workers);
+  println!(
+    "workers: {}\ntemp dir: '{}'\nencoder args: {:?}",
+    args.workers,
+    &args.temp_dir.display(),
+    &args.video_params
+  );
 
   let log_file = File::create("log.log").unwrap();
 
@@ -237,6 +244,19 @@ pub fn _main() -> anyhow::Result<()> {
 
   let encode_dir = args.temp_dir.join("encode");
   let splits_dir = args.temp_dir.join("split");
+
+  if args.output.exists() {
+    if !Confirm::new()
+      .with_prompt(format!(
+        "Output file '{}' exists. Overwrite?",
+        &args.output.display()
+      ))
+      .interact()?
+    {
+      println!("Exiting...");
+      return Ok(());
+    }
+  }
 
   // TODO warn if temp folder is not empty
   let _ = fs::create_dir(&args.temp_dir);
@@ -249,20 +269,6 @@ pub fn _main() -> anyhow::Result<()> {
 
   let downscaled =
     vapoursynth::create_vapoursynth_scenedetect_script(&splits_dir, input, args.chunk_method)?;
-
-  if args.output.exists() {
-    if !Confirm::new()
-      .wait_for_newline(true)
-      .with_prompt(format!(
-        "Output file '{}' exists. Overwrite?",
-        &args.output.to_string_lossy()
-      ))
-      .interact()?
-    {
-      println!("Exiting...");
-      return Ok(());
-    }
-  }
 
   let total_frames = vapoursynth::get_num_frames(vsinput).unwrap() as u64;
 
@@ -365,7 +371,17 @@ pub fn _main() -> anyhow::Result<()> {
   })
   .unwrap();
 
-  println!("Took {:.1?}", encode_start_time.elapsed());
+  let end = encode_start_time.elapsed();
+
+  println!("Concatenating...");
+
+  av1an::ffmpeg::concatenate_ffmpeg(&args.temp_dir, &args.output, args.encoder);
+
+  if !args.keep {
+    remove_dir_all(&args.temp_dir)?;
+  }
+
+  println!("Took {:.1?}", end);
 
   Ok(())
 }

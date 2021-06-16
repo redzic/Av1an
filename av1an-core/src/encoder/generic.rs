@@ -169,12 +169,10 @@ impl<
         let mut stdin = first_pass.stdin.take().unwrap();
 
         let pipe = pipe.clone();
-        let pipe = s.spawn(move |_| {
+        s.spawn(move |_| {
           pipe(input, chunk.start, chunk.end, &mut stdin);
-          pipe
         });
 
-        pipe.join().unwrap();
         let output = first_pass.wait_with_output().unwrap();
 
         if output.status.success() {
@@ -186,10 +184,10 @@ impl<
         } else {
           info!(
             logger,
-            "First pass (chunk {}) failed with output: {:?}. Restarting... (try {})",
+            "Chunk {} failed on first pass (try {}). Restarting...\nEncoder output: {:?}",
             chunk.index,
-            output,
-            _try
+            _try,
+            output
           );
         }
       }
@@ -203,42 +201,54 @@ impl<
         }
       }
 
-      // TODO fix output
-      let mut second_pass = (self.second_pass_gen)(&self.encoder_args, output)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
+      for _try in 1usize.. {
+        let mut second_pass = (self.second_pass_gen)(&self.encoder_args, output)
+          .stdout(Stdio::piped())
+          .stderr(Stdio::piped())
+          .stdin(Stdio::piped())
+          .spawn()
+          .unwrap();
 
-      let mut stdin = second_pass.stdin.take().unwrap();
+        let mut stdin = second_pass.stdin.take().unwrap();
 
-      let pipe = s.spawn(move |_| {
-        pipe(input, chunk.start, chunk.end, &mut stdin);
-      });
+        let pipe = pipe.clone();
+        s.spawn(move |_| {
+          pipe(input, chunk.start, chunk.end, &mut stdin);
+        });
 
-      let stderr = second_pass.stderr.take().unwrap();
-      let out = PipeStreamReader::new(Box::new(stderr));
+        let stderr = second_pass.stderr.take().unwrap();
+        let out = PipeStreamReader::new(Box::new(stderr));
 
-      for line in out.lines {
-        match line {
-          Ok(PipedLine::Line(s)) => {
-            let s = s.as_str();
-            if let Some(frame) = (self.parse_func)(s) {
-              progress
-                .send(PassProgress {
-                  chunk_index: chunk.index,
-                  frames_encoded: frame,
-                })
-                .unwrap();
+        for line in out.lines {
+          match line {
+            Ok(PipedLine::Line(s)) => {
+              let s = s.as_str();
+              if let Some(frame) = (self.parse_func)(s) {
+                progress
+                  .send(PassProgress {
+                    chunk_index: chunk.index,
+                    frames_encoded: frame,
+                  })
+                  .unwrap();
+              }
             }
+            _ => break,
           }
-          _ => break,
+        }
+
+        let output = second_pass.wait_with_output().unwrap();
+        if output.status.success() {
+          break;
+        } else {
+          info!(
+            logger,
+            "Chunk {} failed on second pass (try {}). Restarting...\nEncoder output: {:?}",
+            chunk.index,
+            _try,
+            output
+          );
         }
       }
-
-      pipe.join().unwrap();
-      second_pass.wait().unwrap();
 
       info!(logger, "Chunk {} finished", chunk.index);
     })

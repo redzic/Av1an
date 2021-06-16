@@ -15,11 +15,7 @@ log = "0.4.14"
 slog = "2.7.0"
 slog-term = "2.8.0"
 crossbeam-utils = "0.8.5"
-
-[dependencies.clap]
-version = "2.33.3"
-default-features = false
-features = ["suggestions"]
+clap = "2.33.3"
 
 [build-dependencies]
 vergen = "5.1.8"

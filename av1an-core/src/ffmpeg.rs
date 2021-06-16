@@ -1,7 +1,7 @@
 use regex::Regex;
-use std::fs::{read_dir, File};
+use std::fs::File;
 use std::io::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::Encoder;
@@ -79,25 +79,48 @@ pub fn get_keyframes(source: &Path) -> Vec<usize> {
 pub fn write_concat_file(temp_folder: &Path) {
   let concat_file = &temp_folder.join("concat");
   let encode_folder = &temp_folder.join("encode");
-  let files = read_dir(encode_folder).unwrap();
 
-  let mut fls = vec![];
+  let mut files: Vec<PathBuf> = std::fs::read_dir(encode_folder)
+    .unwrap()
+    .into_iter()
+    .filter_map(|d| d.ok())
+    .filter_map(|d| {
+      if let Ok(file_type) = d.file_type() {
+        if file_type.is_file() {
+          Some(d.path())
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    })
+    .collect();
 
-  for i in files {
-    fls.push(i.unwrap());
-  }
+  assert!(!files.is_empty());
 
-  let mut contents = String::new();
+  files.sort_unstable_by_key(|x| {
+    // If the temp directory follows the expected format of 00000.ivf, 00001.ivf, etc.,
+    // then these unwraps will not fail
+    x.file_stem()
+      .unwrap()
+      .to_str()
+      .unwrap()
+      .parse::<u32>()
+      .unwrap()
+  });
 
-  for i in fls {
-    contents.push_str(format!("file {}\n", i.path().display()).as_str());
+  let mut contents = String::with_capacity(files.len() * 16);
+
+  for file in files {
+    contents.push_str(format!("file {}\n", file.canonicalize().unwrap().display()).as_str());
   }
 
   let mut file = File::create(concat_file).unwrap();
   file.write_all(contents.as_bytes()).unwrap();
 }
 
-pub fn have_audio(file: &Path) -> bool {
+pub fn has_audio(file: &Path) -> bool {
   let mut cmd = Command::new("ffmpeg");
 
   cmd.stdout(Stdio::piped());
@@ -116,7 +139,7 @@ pub fn have_audio(file: &Path) -> bool {
 
 /// Extracting audio
 pub fn extract_audio(input: &Path, temp: &Path, audio_params: Vec<String>) {
-  let have_audio = have_audio(input);
+  let have_audio = has_audio(input);
 
   if have_audio {
     let audio_file = Path::new(temp).join("audio.mkv");
@@ -154,7 +177,7 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
 
   write_concat_file(temp);
 
-  let audio_file = Path::new(&temp).join("audio.mkv");
+  let audio_file = temp.join("audio.mkv");
 
   let mut audio_cmd = Vec::new();
 
