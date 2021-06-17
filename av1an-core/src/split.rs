@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-pub fn segment(input: &Path, temp: &Path, segments: Vec<usize>) {
+pub fn segment(input: &Path, temp: &Path, segments: &[usize]) {
   let mut cmd = Command::new("ffmpeg");
 
   cmd.stdout(Stdio::piped());

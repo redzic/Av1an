@@ -128,7 +128,8 @@ pub fn has_audio(file: &Path) -> bool {
 
   let re = Regex::new(r".*Stream.+(Audio)").unwrap();
 
-  cmd.args(&["-hide_banner", "-i", file.to_str().unwrap()]);
+  cmd.args(&["-hide_banner", "-i"]);
+  cmd.arg(file);
 
   let out = cmd.output().unwrap();
 

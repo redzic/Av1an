@@ -106,6 +106,7 @@ Toolchain:  rustc {} (LLVM version {})
     av1an [OPTIONS] -i <INPUT> -o <OUTPUT>
     av1an [OPTIONS] -v [VIDEO_PARAMS ...] -- -i <INPUT> -o <OUTPUT>")
     .setting(AppSettings::ColoredHelp)
+    .setting(AppSettings::DeriveDisplayOrder)
     .arg(
       Arg::with_name("INPUT")
         .help("Input file or vapoursynth (.py, .vpy) script")
@@ -163,6 +164,16 @@ Toolchain:  rustc {} (LLVM version {})
         .multiple(true)
         .allow_hyphen_values(true)
         .value_terminator("--")
+    )
+    .arg(
+      Arg::with_name("AUDIO_PARAMS")
+        .help("Set the audio parameters for FFmpeg, which are specified directly as arguments to av1an, and are terminated with `--`")
+        .short("a")
+        .long("audio-params")
+        .takes_value(true)
+        .multiple(true)
+        .allow_hyphen_values(true)
+        .value_terminator("--")
     );
 
   let matches = app.get_matches();
@@ -208,6 +219,11 @@ Toolchain:  rustc {} (LLVM version {})
     ],
   };
 
+  let audio_params: Vec<String> = match matches.values_of("AUDIO_PARAMS") {
+    Some(v) => v.into_iter().map(|s| s.to_owned()).collect(),
+    None => vec!["-c:a".into(), "copy".into()],
+  };
+
   Ok(CliOptions {
     input,
     output,
@@ -218,21 +234,23 @@ Toolchain:  rustc {} (LLVM version {})
     chunk_method,
     workers,
     video_params,
-    audio_params: Vec::with_capacity(0),
+    audio_params,
   })
 }
 
 const INDICATIF_PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] [{bar:60.cyan/blue}] {percent:>3.bold}% {pos}/{len} ({fps:.bold}, eta {eta})";
 
 #[inline(always)]
+#[allow(clippy::collapsible_if)]
 pub fn _main() -> anyhow::Result<()> {
   let args: CliOptions = parse_cli()?;
 
   println!(
-    "workers: {}\ntemp dir: '{}'\nencoder args: {:?}",
+    "workers: {}\ntemp dir: '{}'\nencoder args: {:?}\naudio params: {:?}",
     args.workers,
     &args.temp_dir.display(),
-    &args.video_params
+    &args.video_params,
+    &args.audio_params
   );
 
   let log_file = File::create("log.log").unwrap();
@@ -371,7 +389,7 @@ pub fn _main() -> anyhow::Result<()> {
   })
   .unwrap();
 
-  let end = encode_start_time.elapsed();
+  let elapsed = encode_start_time.elapsed();
 
   println!("Concatenating...");
 
@@ -381,7 +399,7 @@ pub fn _main() -> anyhow::Result<()> {
     remove_dir_all(&args.temp_dir)?;
   }
 
-  println!("Took {:.1?}", end);
+  println!("Encode took {:.1?}", elapsed);
 
   Ok(())
 }
