@@ -10,7 +10,6 @@ pub struct Chunk {
   pub end: usize,
 }
 
-// TODO refactor this into general frame splits -> Chunk conversion function
 #[must_use]
 pub fn splits_to_chunks(num_frames: usize, split_locations: &[usize]) -> Vec<Chunk> {
   let mut chunk_boundaries: Vec<Chunk> = split_locations

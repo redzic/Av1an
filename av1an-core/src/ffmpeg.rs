@@ -232,7 +232,7 @@ pub fn concatenate(temp: &Path, output: &Path, encoder: Encoder) {
         ])
         .arg(output);
     }
-  };
+  }
 
   let out = cmd.output().unwrap();
   assert!(out.status.success());

@@ -145,10 +145,8 @@ impl<
 // progress information to stderr
 impl<
     'a,
-    // W: 'a + Write + Send + Sync,
-    // this would involve using scoped thread instead
     T,
-    Pipe: Clone + Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync,
+    Pipe: Copy + Clone + Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync,
     ParseFunc: Fn(&str) -> Option<usize> + Clone,
     FpCmdGen: Fn(&[String], &Path) -> Command,
     SpCmdGen: Fn(&[String], (&Path, &Path)) -> Command,
@@ -176,7 +174,6 @@ impl<
           .unwrap();
         let mut stdin = first_pass.stdin.take().unwrap();
 
-        let pipe = pipe.clone();
         s.spawn(move |_| {
           pipe(input, chunk.start, chunk.end, &mut stdin);
         });
@@ -219,7 +216,6 @@ impl<
 
         let mut stdin = second_pass.stdin.take().unwrap();
 
-        let pipe = pipe.clone();
         s.spawn(move |_| {
           pipe(input, chunk.start, chunk.end, &mut stdin);
         });
@@ -266,9 +262,8 @@ impl<
 
 impl<
     'a,
-    // this would involve using scoped threads instead
     T,
-    Pipe: Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync + Copy + Clone,
+    Pipe: Copy + Clone + Fn(&Path, usize, usize, &mut ChildStdin) -> T + Send + Sync,
     ParseFunc: Fn(&str) -> Option<usize> + Clone + Send,
     FpCmdGen: Fn(&[String], &Path) -> Command + Clone + Send,
     SpCmdGen: Fn(&[String], (&Path, &Path)) -> Command + Clone + Send,
