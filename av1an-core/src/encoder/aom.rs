@@ -1,21 +1,18 @@
-use std::path::Path;
-use std::process::Command;
-use std::sync::mpsc::Sender;
+use std::{path::Path, process::Command, sync::mpsc::Sender};
 
-use crate::encoder::generic::TwoPassEncoder;
-use crate::encoder::PassProgress;
+use crate::encoder::{generic::TwoPassEncoder, PassProgress};
 
-// TODO simplify definition for parsing first & second pass
-pub struct Aom(
+pub struct Aom<'a>(
   pub  TwoPassEncoder<
+    'a,
     fn(&str) -> Option<usize>,
     fn(&[String], &Path) -> Command,
     fn(&[String], (&Path, &Path)) -> Command,
   >,
 );
 
-impl Aom {
-  pub fn new(progress: Sender<PassProgress>, encoder_args: Vec<String>) -> Self {
+impl<'a> Aom<'a> {
+  pub fn new(progress: Sender<PassProgress>, encoder_args: &'a [String]) -> Self {
     Self(TwoPassEncoder::new(
       parse_encoded_frames,
       // TODO remove unused parameter
@@ -34,10 +31,7 @@ impl Aom {
         let mut second_pass = Command::new("aomenc");
         second_pass.args(&["-", "--passes=2", "--pass=2"]);
         second_pass.args(encoder_args);
-        second_pass.arg(format!(
-          "--fpf={}",
-          output_file.0.as_os_str().to_string_lossy()
-        ));
+        second_pass.arg(format!("--fpf={}", output_file.0.display()));
         second_pass.arg("-o");
         second_pass.arg(output_file.1);
         second_pass
@@ -50,7 +44,6 @@ impl Aom {
 
 const IRRELEVANT_CHARS: &str = "Pass -/- frame  ---/";
 
-/// Parse the number of frames encoded by aomenc for the second pass.
 fn parse_encoded_frames(s: &str) -> Option<usize> {
   if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
     unsafe { parse_encoded_frames_sse2(s) }

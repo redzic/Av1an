@@ -1,6 +1,8 @@
 use av_scenechange::{detect_scene_changes, DetectionOptions};
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::{
+  path::Path,
+  process::{Command, Stdio},
+};
 
 /// Detect scene changes using rav1e scene detector.
 ///

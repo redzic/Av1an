@@ -1,14 +1,20 @@
-use std::io::{self, Read};
-use std::path::Path;
-use std::process::{ChildStdin, Command, Stdio};
-use std::string::FromUtf8Error;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
-use std::time::Duration;
+use std::{
+  io::{
+    Read, {self},
+  },
+  path::Path,
+  process::{ChildStdin, Command, Stdio},
+  string::FromUtf8Error,
+  sync::mpsc::{
+    Receiver, Sender, {self},
+  },
+  thread,
+  time::Duration,
+};
 
 use slog::{info, Logger};
 
-use crate::encoder::{Chunk, PassProgress};
+use crate::{chunk::Chunk, encoder::PassProgress};
 
 /// API for encoding a single chunk. For a high-level API to encode
 /// an entire video, use <TODO>.
@@ -96,6 +102,7 @@ impl PipeStreamReader {
 
 #[derive(Clone)]
 pub struct TwoPassEncoder<
+  'a,
   ParseFunc: Fn(&str) -> Option<usize>,
   FpGen: Fn(&[String], &Path) -> Command,
   SpGen: Fn(&[String], (&Path, &Path)) -> Command,
@@ -104,7 +111,7 @@ pub struct TwoPassEncoder<
   first_pass_gen: FpGen,
   second_pass_gen: SpGen,
   progress_sender: Sender<PassProgress>,
-  encoder_args: Vec<String>,
+  encoder_args: &'a [String],
 }
 
 // TODO make param types name consistent
@@ -113,14 +120,15 @@ impl<
     ParseFunc: Fn(&str) -> Option<usize>,
     FpGen: Fn(&[String], &Path) -> Command,
     SpGen: Fn(&[String], (&Path, &Path)) -> Command,
-  > TwoPassEncoder<ParseFunc, FpGen, SpGen>
+  > TwoPassEncoder<'a, ParseFunc, FpGen, SpGen>
 {
   pub fn new(
     parse_func: ParseFunc,
     first_pass_gen: FpGen,
     second_pass_gen: SpGen,
     progress_sender: Sender<PassProgress>,
-    encoder_args: Vec<String>,
+    // encoder_args: Vec<String>,
+    encoder_args: &'a [String],
   ) -> Self {
     Self {
       parse_func,
@@ -145,7 +153,7 @@ impl<
     FpCmdGen: Fn(&[String], &Path) -> Command,
     SpCmdGen: Fn(&[String], (&Path, &Path)) -> Command,
   > EncodeChunk<Pipe, &Path, PassProgress, (&Path, &Path), Logger>
-  for TwoPassEncoder<ParseFunc, FpCmdGen, SpCmdGen>
+  for TwoPassEncoder<'a, ParseFunc, FpCmdGen, SpCmdGen>
 {
   fn encode_chunk(
     &mut self,
@@ -265,7 +273,7 @@ impl<
     FpCmdGen: Fn(&[String], &Path) -> Command + Clone + Send,
     SpCmdGen: Fn(&[String], (&Path, &Path)) -> Command + Clone + Send,
   > ParallelEncode<Pipe, (&'a Path, &'a Path), PassProgress, &Path, Logger>
-  for TwoPassEncoder<ParseFunc, FpCmdGen, SpCmdGen>
+  for TwoPassEncoder<'a, ParseFunc, FpCmdGen, SpCmdGen>
 {
   fn encode(
     &mut self,

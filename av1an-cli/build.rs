@@ -1,5 +1,4 @@
-use vergen::{vergen, Config};
-use vergen::{SemverKind, ShaKind};
+use vergen::{vergen, Config, SemverKind, ShaKind};
 
 fn main() {
   let mut config = Config::default();

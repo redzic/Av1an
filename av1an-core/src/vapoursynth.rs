@@ -1,13 +1,10 @@
-// TODO switch error handling crate, failure is deprecated
-use failure::{Error, ResultExt};
-
 extern crate num_rational;
 extern crate vapoursynth;
 
+// TODO: do actual error handling with `thiserror`.
+
 use anyhow::anyhow;
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
+use std::{fs::File, io::Write, path::Path};
 
 use self::vapoursynth::prelude::*;
 use super::*;
@@ -18,7 +15,7 @@ struct OutputParameters<'core> {
   end_frame: usize,
 }
 
-fn print_y4m_header<W: Write>(writer: &mut W, node: &Node) -> Result<(), Error> {
+fn print_y4m_header<W: Write>(writer: &mut W, node: &Node) -> anyhow::Result<()> {
   let info = node.info();
 
   if let Property::Constant(format) = info.format {
@@ -96,7 +93,7 @@ fn print_y4m_header<W: Write>(writer: &mut W, node: &Node) -> Result<(), Error> 
   }
 }
 
-fn print_frame<W: Write>(writer: &mut W, frame: &Frame) -> Result<(), Error> {
+fn print_frame<W: Write>(writer: &mut W, frame: &Frame) -> anyhow::Result<()> {
   const RGB_REMAP: [usize; 3] = [1, 2, 0];
 
   let format = frame.format();
@@ -120,7 +117,7 @@ fn print_frame<W: Write>(writer: &mut W, frame: &Frame) -> Result<(), Error> {
   Ok(())
 }
 
-fn write_frames<W: Write>(writer: &mut W, frame: &Frame) -> Result<(), Error> {
+fn write_frames<W: Write>(writer: &mut W, frame: &Frame) -> anyhow::Result<()> {
   writeln!(writer, "FRAME")?;
 
   print_frame(writer, frame)?;
@@ -131,7 +128,8 @@ fn write_frames<W: Write>(writer: &mut W, frame: &Frame) -> Result<(), Error> {
 fn output<W: Write + Send + Sync>(
   mut out: &mut W,
   parameters: OutputParameters,
-) -> Result<(), Error> {
+  // ) -> Result<(), Error> {
+) -> anyhow::Result<()> {
   print_y4m_header(&mut out, &parameters.node)?;
 
   for n in parameters.start_frame..=parameters.end_frame {
@@ -150,12 +148,14 @@ pub fn pipe<W: Write + Send + Sync>(
   start_frame: usize,
   end_frame: usize,
   out: &mut W,
-) -> Result<(), Error> {
+) -> anyhow::Result<()> {
   // Create a new VSScript environment.
-  let mut environment = Environment::new().context("Couldn't create the VSScript environment")?;
+  let mut environment = Environment::new().unwrap();
 
   // Evaluate the script.
-  environment.eval_file(input, EvalFlags::SetWorkingDir)?;
+  environment
+    .eval_file(input, EvalFlags::SetWorkingDir)
+    .unwrap();
 
   // Get the output node.
   let output_index = 0;
@@ -166,13 +166,7 @@ pub fn pipe<W: Write + Send + Sync>(
     output_index
   ))?;
   #[cfg(not(feature = "gte-vsscript-api-31"))]
-  let (node, _) = (
-    environment.get_output(output_index).context(format!(
-      "Couldn't get the output node at index {}",
-      output_index
-    ))?,
-    None::<Node>,
-  );
+  let (node, _) = (environment.get_output(output_index).unwrap(), None::<Node>);
 
   let num_frames = {
     let info = node.info();
@@ -220,12 +214,14 @@ pub fn pipe<W: Write + Send + Sync>(
   Ok(())
 }
 
-pub fn get_num_frames(path: &Path) -> Result<usize, Error> {
+pub fn get_num_frames(path: &Path) -> anyhow::Result<usize> {
   // Create a new VSScript environment.
-  let mut environment = Environment::new().context("Couldn't create the VSScript environment")?;
+  let mut environment = Environment::new().unwrap();
 
   // Evaluate the script.
-  environment.eval_file(path, EvalFlags::SetWorkingDir)?;
+  environment
+    .eval_file(path, EvalFlags::SetWorkingDir)
+    .unwrap();
 
   // Get the output node.
   let output_index = 0;
@@ -236,13 +232,7 @@ pub fn get_num_frames(path: &Path) -> Result<usize, Error> {
     output_index
   ))?;
   #[cfg(not(feature = "gte-vsscript-api-31"))]
-  let (node, _) = (
-    environment.get_output(output_index).context(format!(
-      "Couldn't get the output node at index {}",
-      output_index
-    ))?,
-    None::<Node>,
-  );
+  let (node, _) = (environment.get_output(output_index).unwrap(), None::<Node>);
 
   let num_frames = {
     let info = node.info();

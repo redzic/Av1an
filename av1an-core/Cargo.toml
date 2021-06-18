@@ -13,7 +13,6 @@ anyhow = "1.0.40"
 num_cpus = "1.13.0"
 vapoursynth = { version = "0.3.0", features = ["vsscript-functions", "vapoursynth-functions"] }
 num-rational = "0.4.0"
-failure = "0.1.8"
 regex = "1.5.4"
 thiserror = "1.0.24"
 y4m = "0.7.0"

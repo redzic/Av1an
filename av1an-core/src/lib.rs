@@ -1,12 +1,15 @@
 #[macro_use]
 extern crate log;
 
-use std::path::Path;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::{
+  path::{Path, PathBuf},
+  process::{Command, Stdio},
+};
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::{
+  collections::hash_map::DefaultHasher,
+  hash::{Hash, Hasher},
+};
 
 use strum_macros::EnumString;
 

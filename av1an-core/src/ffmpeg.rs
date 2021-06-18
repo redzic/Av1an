@@ -1,8 +1,10 @@
 use regex::Regex;
-use std::fs::File;
-use std::io::prelude::*;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::{
+  fs::File,
+  io::prelude::*,
+  path::{Path, PathBuf},
+  process::{Command, Stdio},
+};
 
 use crate::Encoder;
 
@@ -139,7 +141,7 @@ pub fn has_audio(file: &Path) -> bool {
 }
 
 /// Extracting audio
-pub fn extract_audio(input: &Path, temp: &Path, audio_params: Vec<String>) {
+pub fn encode_audio(input: &Path, temp: &Path, audio_params: &[String]) {
   let have_audio = has_audio(input);
 
   if have_audio {
@@ -149,22 +151,12 @@ pub fn extract_audio(input: &Path, temp: &Path, audio_params: Vec<String>) {
     process_audio.stdout(Stdio::piped());
     process_audio.stderr(Stdio::piped());
 
-    process_audio.args(&[
-      "-y",
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-i",
-      input.to_str().unwrap(),
-      "-map_metadata",
-      "-1",
-      "-dn",
-      "-vn",
-    ]);
+    process_audio.args(&["-y", "-hide_banner", "-loglevel", "error", "-i"]);
+    process_audio.arg(input);
+    process_audio.args(&["-map_metadata", "-1", "-dn", "-vn", "-sn"]);
 
-    let audio_args: Vec<&str> = audio_params.iter().map(|x| &**x).collect();
-    process_audio.args(audio_args);
-    process_audio.arg(audio_file.to_str().unwrap());
+    process_audio.args(audio_params);
+    process_audio.arg(audio_file);
 
     let out = process_audio.output().unwrap();
     assert!(out.status.success());
@@ -172,19 +164,12 @@ pub fn extract_audio(input: &Path, temp: &Path, audio_params: Vec<String>) {
 }
 
 /// Concatenates using ffmpeg
-pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
+pub fn concatenate(temp: &Path, output: &Path, encoder: Encoder) {
   let concat = &temp.join("concat");
-  let concat_file = concat.to_str().unwrap();
 
   write_concat_file(temp);
 
-  let audio_file = temp.join("audio.mkv");
-
-  let mut audio_cmd = Vec::new();
-
-  if audio_file.exists() && audio_file.metadata().unwrap().len() > 1000 {
-    audio_cmd = vec!["-i", audio_file.to_str().unwrap(), "-c", "copy"];
-  }
+  let audio = temp.join("audio.mkv");
 
   let mut cmd = Command::new("ffmpeg");
 
@@ -192,8 +177,8 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
   cmd.stderr(Stdio::piped());
 
   match encoder {
-    Encoder::x265 => cmd
-      .args(&[
+    Encoder::x265 => {
+      cmd.args(&[
         "-y",
         "-fflags",
         "+genpts",
@@ -205,38 +190,51 @@ pub fn concatenate_ffmpeg(temp: &Path, output: &Path, encoder: Encoder) {
         "-safe",
         "0",
         "-i",
-        concat_file,
-      ])
-      .args(audio_cmd)
-      .args(&[
-        "-c",
-        "copy",
-        "-movflags",
-        "frag_keyframe+empty_moov",
-        "-map",
-        "0",
-        "-f",
-        "mp4",
-        output.to_str().unwrap(),
-      ]),
-    _ => cmd
-      .args(&[
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        concat_file,
-      ])
-      .args(audio_cmd)
-      .args(&["-c", "copy", "-sn", "-map", "0", output.to_str().unwrap()]),
+      ]);
+      if audio.exists() {
+        if let Ok(metadata) = audio.metadata() {
+          if metadata.len() > 1000 {
+            cmd.arg(concat).arg("-i").arg(audio).args(&[
+              "-map", "1:a", "-c:a", "copy", "-map", "0:v", "-c:v", "copy", "-sn",
+            ]);
+          }
+        }
+      }
+      cmd
+        .args(&[
+          "-movflags",
+          "frag_keyframe+empty_moov",
+          "-map",
+          "0",
+          "-f",
+          "mp4",
+        ])
+        .arg(output);
+    }
+    _ => {
+      cmd
+        .args(&[
+          "-y",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-f",
+          "concat",
+          "-safe",
+          "0",
+          "-i",
+        ])
+        .arg(concat)
+        .arg("-i")
+        .arg(audio)
+        .args(&[
+          "-map", "1:a", "-c:a", "copy", "-map", "0:v", "-c:v", "copy", "-sn",
+        ])
+        .arg(output);
+    }
   };
-  let out = cmd.output().unwrap();
 
+  let out = cmd.output().unwrap();
   assert!(out.status.success());
 }
 
@@ -266,9 +264,8 @@ pub fn get_frame_types(file: &Path) -> Vec<String> {
 
   let output = String::from_utf8(out.stderr).unwrap();
 
-  let str_vec = output.split('\n').collect::<Vec<_>>();
-
-  let string_vec: Vec<String> = str_vec.iter().map(|x| x.to_string()).collect();
-
-  string_vec
+  output
+    .split('\n')
+    .map(|s| s.to_string())
+    .collect::<Vec<_>>()
 }

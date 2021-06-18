@@ -1,5 +1,7 @@
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::{
+  path::Path,
+  process::{Command, Stdio},
+};
 
 pub fn segment(input: &Path, temp: &Path, segments: &[usize]) {
   let mut cmd = Command::new("ffmpeg");

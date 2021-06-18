@@ -1,26 +1,29 @@
-use std::ffi::OsStr;
-use std::fs;
-use std::fs::remove_dir_all;
-use std::fs::File;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Sender};
-use std::thread;
-use std::time::Instant;
+use std::{
+  ffi::OsStr,
+  fs,
+  fs::File,
+  mem,
+  path::{Path, PathBuf},
+  sync::mpsc::{
+    Sender, {self},
+  },
+  thread,
+  time::Instant,
+};
 
-use av1an::chunk::create_video_queue_vs;
-use av1an::encoder;
-use av1an::encoder::generic::ParallelEncode;
-use av1an::encoder::PassProgress;
-use av1an::hash_path;
-use av1an::vapoursynth;
-use av1an::{scenedetect, ChunkMethod, ConcatMethod, Encoder};
+use av1an::{
+  chunk::splits_to_chunks,
+  encoder::{
+    generic::ParallelEncode,
+    PassProgress, {self},
+  },
+  ffmpeg, hash_path, scenedetect, vapoursynth, ChunkMethod, ConcatMethod, Encoder,
+};
 
-use clap::AppSettings;
-use clap::{App, Arg};
+use clap::{App, AppSettings, Arg};
 use dialoguer::Confirm;
 use indicatif::{ProgressBar, ProgressStyle};
-use slog::{error, info, o};
-use slog::{Drain, Logger};
+use slog::{error, info, o, Drain, Logger};
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -240,7 +243,6 @@ Toolchain:  rustc {} (LLVM version {})
 
 const INDICATIF_PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] [{bar:60.cyan/blue}] {percent:>3.bold}% {pos}/{len} ({fps:.bold}, eta {eta})";
 
-#[inline(always)]
 #[allow(clippy::collapsible_if)]
 pub fn _main() -> anyhow::Result<()> {
   let args: CliOptions = parse_cli()?;
@@ -253,12 +255,12 @@ pub fn _main() -> anyhow::Result<()> {
     &args.audio_params
   );
 
-  let log_file = File::create("log.log").unwrap();
+  let log_file = File::create("log.log")?;
 
   let plain = slog_term::PlainSyncDecorator::new(log_file);
   let log = Logger::root(slog_term::FullFormat::new(plain).build().fuse(), o!());
 
-  let input = args.input.path.as_path();
+  let args: &'static CliOptions = unsafe { mem::transmute(&args) };
 
   let encode_dir = args.temp_dir.join("encode");
   let splits_dir = args.temp_dir.join("split");
@@ -281,14 +283,20 @@ pub fn _main() -> anyhow::Result<()> {
   let _ = fs::create_dir(&encode_dir);
   let _ = fs::create_dir(&splits_dir);
 
-  let vsinput =
-    vapoursynth::create_vapoursynth_source_script(&splits_dir, input, args.chunk_method)?;
+  let vsinput = vapoursynth::create_vapoursynth_source_script(
+    &splits_dir,
+    &args.input.path,
+    args.chunk_method,
+  )?;
   let vsinput = vsinput.as_path();
 
-  let downscaled =
-    vapoursynth::create_vapoursynth_scenedetect_script(&splits_dir, input, args.chunk_method)?;
+  let downscaled = vapoursynth::create_vapoursynth_scenedetect_script(
+    &splits_dir,
+    &args.input.path,
+    args.chunk_method,
+  )?;
 
-  let total_frames = vapoursynth::get_num_frames(vsinput).unwrap() as u64;
+  let total_frames = vapoursynth::get_num_frames(vsinput)? as u64;
 
   println!("Scene detection");
 
@@ -300,6 +308,10 @@ pub fn _main() -> anyhow::Result<()> {
       .template(INDICATIF_PROGRESS_TEMPLATE)
       .progress_chars("#>-"),
   );
+
+  let audio_encode = thread::spawn(move || {
+    ffmpeg::encode_audio(&args.input.path, &args.temp_dir, &args.audio_params)
+  });
 
   let encode_start_time = Instant::now();
 
@@ -320,13 +332,13 @@ pub fn _main() -> anyhow::Result<()> {
   bar.finish();
 
   let scene_changes = scene_changes.join().unwrap();
-  let splits = create_video_queue_vs(vsinput, &scene_changes);
+  let splits = splits_to_chunks(total_frames as usize, &scene_changes);
   let splits = splits.as_slice();
   info!(log, "scenes({}) = {:#?}", splits.len(), splits);
 
   let (tx, rx): (Sender<PassProgress>, _) = mpsc::channel();
 
-  let mut aomenc = encoder::aom::Aom::new(tx, args.video_params);
+  let mut aomenc = encoder::aom::Aom::new(tx, &args.video_params);
 
   let splits_dir = splits_dir.as_path();
   let encode_dir = encode_dir.as_path();
@@ -389,17 +401,17 @@ pub fn _main() -> anyhow::Result<()> {
   })
   .unwrap();
 
-  let elapsed = encode_start_time.elapsed();
+  audio_encode.join().unwrap();
 
   println!("Concatenating...");
 
-  av1an::ffmpeg::concatenate_ffmpeg(&args.temp_dir, &args.output, args.encoder);
+  ffmpeg::concatenate(&args.temp_dir, &args.output, args.encoder);
+
+  println!("Encode took {:.1?}", encode_start_time.elapsed());
 
   if !args.keep {
-    remove_dir_all(&args.temp_dir)?;
+    fs::remove_dir_all(&args.temp_dir)?;
   }
-
-  println!("Encode took {:.1?}", elapsed);
 
   Ok(())
 }

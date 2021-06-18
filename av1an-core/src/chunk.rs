@@ -1,24 +1,27 @@
-use std::cmp::Reverse;
-use std::iter;
-use std::path::Path;
+use std::{cmp::Reverse, iter};
 
-use crate::encoder::Chunk;
-use crate::vapoursynth;
+#[derive(Copy, Clone, Debug)]
+pub struct Chunk {
+  /// Index of the chunk
+  pub index: usize,
+  /// Starting frame (inclusive)
+  pub start: usize,
+  /// Ending frame (inclusive)
+  pub end: usize,
+}
 
 // TODO refactor this into general frame splits -> Chunk conversion function
 #[must_use]
-pub fn create_video_queue_vs(input: &Path, split_locations: &[usize]) -> Vec<Chunk> {
-  let last_frame = vapoursynth::get_num_frames(input).unwrap();
-
+pub fn splits_to_chunks(num_frames: usize, split_locations: &[usize]) -> Vec<Chunk> {
   let mut chunk_boundaries: Vec<Chunk> = split_locations
     .iter()
     .copied()
-    .chain(iter::once(last_frame))
+    .chain(iter::once(num_frames))
     .zip(
       split_locations
         .iter()
         .copied()
-        .chain(iter::once(last_frame))
+        .chain(iter::once(num_frames))
         // it's zero-indexed so the second frame needs to be offset to not get a frame that doesn't exist
         .map(|x| x - 1)
         .skip(1),
