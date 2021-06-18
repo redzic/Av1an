@@ -153,7 +153,7 @@ pub fn encode_audio(input: &Path, temp: &Path, audio_params: &[String]) {
 
     process_audio.args(&["-y", "-hide_banner", "-loglevel", "error", "-i"]);
     process_audio.arg(input);
-    process_audio.args(&["-map_metadata", "-1", "-dn", "-vn", "-sn"]);
+    process_audio.args(&["-map_metadata", "-1", "-dn", "-vn", "-sn", "-map", "0:a"]);
 
     process_audio.args(audio_params);
     process_audio.arg(audio_file);
